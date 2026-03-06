@@ -1,0 +1,18 @@
+[package]
+name = "cube_v2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { version = "0.14", features = ["webgl2"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+uuid = { version = "1.22.0", features = ["js"] }
+bevy_egui = { version = "0.28", default-features = false, features = ["render", "default_fonts"] }
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+# Optimizare dev pentru WASM (fara aceasta, e extrem de lent in browser)
+[profile.dev]
+opt-level = 1
