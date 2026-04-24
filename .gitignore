@@ -1,20 +1,27 @@
 # Rust / Cargo
 /target/
+frontend/target/
 Cargo.lock
 
-# Trunk (WASM build output)
-/dist/
+# Trunk development cache
 /.trunk/
+
+# Backend Gleam / Erlang
+backend/build/
+
+# Crash dumps
+erl_crash.dump
 
 # Editor
 .vscode/
 .idea/
 *.swp
 *.swo
+*.iml
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Proiect
-prompt.md
+# Logs
+*.log
