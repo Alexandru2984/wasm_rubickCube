@@ -10,6 +10,9 @@ const FACE_OFFSET: f32 = CUBIE_SIZE / 2.0 + 0.005;
 const ROTATION_DURATION: f32 = 0.18;
 // Cand asteapta multe mutari (scramble/solve), animatia accelereaza.
 const ROTATION_DURATION_FAST: f32 = 0.07;
+// Drag live: prag de la care se alege stratul si sensibilitatea unghiului.
+const DRAG_LOCK_THRESHOLD: f32 = 10.0;
+const DRAG_ANGLE_PER_PIXEL: f32 = FRAC_PI_2 / 130.0;
 
 fn main() {
     App::new()
@@ -56,26 +59,32 @@ struct OrbitCamera {
 #[derive(Resource, Default)]
 struct PointerState {
     drag: Option<DragData>,
+    manual: Option<ManualRotation>,
     prev_pinch_distance: Option<f32>,
 }
 
 struct DragData {
     start_screen: Vec2,
     kind: DragKind,
-    committed: bool,
 }
 
 #[derive(Clone, Copy)]
 enum DragKind {
     Camera,
-    Face { grid_pos: GridPos, hit_world: Vec3, normal: Vec3 },
+    Face,
 }
 
-fn in_rotating_layer(active: &ActiveRotation, gp: &GridPos) -> bool {
-    active.0.as_ref().map_or(false, |s| {
-        let v = match s.cube_move.layer_axis { 0 => gp.x, 1 => gp.y, _ => gp.z };
-        v == s.cube_move.layer_value
-    })
+/// Rotatie de strat condusa de deget/mouse: stratul urmareste drag-ul in timp
+/// real si face snap la multiplu de 90° la ridicare.
+struct ManualRotation {
+    axis: Vec3,
+    layer_axis: u8,
+    layer_value: i32,
+    entities: Vec<Entity>,
+    initial_transforms: Vec<Transform>,
+    /// Directia pe ecran care corespunde unghiului pozitiv in jurul axei.
+    tangent_screen: Vec2,
+    angle: f32,
 }
 
 fn apply_rotation_delta(state: &mut OrbitCamera, delta: Vec2) {
@@ -94,19 +103,20 @@ fn apply_rotation_delta(state: &mut OrbitCamera, delta: Vec2) {
 fn pointer_input(
     mut pointer: ResMut<PointerState>,
     mut cam_state: ResMut<OrbitCamera>,
-    active_rot: Res<ActiveRotation>,
+    mut active_rot: ResMut<ActiveRotation>,
+    mut history: ResMut<MoveHistory>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mouse_button: Res<ButtonInput<MouseButton>>,
     mut mouse_motion: EventReader<MouseMotion>,
     touches: Res<Touches>,
-    cubie_q: Query<(Entity, &GridPos, &Transform)>,
-    mut queue: ResMut<MoveQueue>,
+    mut cubie_q: Query<(Entity, &GridPos, &mut Transform)>,
     mut egui_ctx: EguiContexts,
 ) {
     let egui_active = egui_ctx.ctx_mut().is_using_pointer() || egui_ctx.ctx_mut().wants_pointer_input();
 
     if egui_active {
+        finish_manual(&mut pointer, &mut active_rot, &mut history);
         pointer.drag = None;
         pointer.prev_pinch_distance = None;
         mouse_motion.clear();
@@ -116,9 +126,10 @@ fn pointer_input(
     let Ok((camera, cam_transform)) = camera_q.get_single() else { return; };
     let Ok(window) = windows.get_single() else { return; };
 
-    // 2+ fingers → pinch zoom, abort any single-pointer drag
+    // 2+ fingers → pinch zoom; rotatia manuala in curs face snap si se incheie.
     let touch_positions: Vec<Vec2> = touches.iter().map(|t| t.position()).collect();
     if touch_positions.len() >= 2 {
+        finish_manual(&mut pointer, &mut active_rot, &mut history);
         let d = touch_positions[0].distance(touch_positions[1]);
         if let Some(prev) = pointer.prev_pinch_distance {
             cam_state.radius = (cam_state.radius - (d - prev) * 0.03).clamp(3.5, 30.0);
@@ -128,13 +139,21 @@ fn pointer_input(
         mouse_motion.clear();
         return;
     }
-    pointer.prev_pinch_distance = None;
 
     // Unified single pointer: touch wins over mouse when present.
     let touch_pos = touch_positions.first().copied();
+
+    // Pinch tocmai s-a incheiat: degetul ramas preia camera fara re-apasare.
+    if pointer.prev_pinch_distance.take().is_some() {
+        if let Some(p) = touch_pos {
+            pointer.drag = Some(DragData { start_screen: p, kind: DragKind::Camera });
+        }
+    }
+
     let touch_delta: Vec2 = touches.iter().next().map(|t| t.delta()).unwrap_or(Vec2::ZERO);
     let touch_just_pressed = touches.iter_just_pressed().next().map(|t| t.position());
-    let touch_just_released = touches.iter_just_released().next().is_some();
+    let touch_ended = touches.iter_just_released().next().is_some()
+        || touches.iter_just_canceled().next().is_some();
 
     let mouse_down = mouse_button.pressed(MouseButton::Left);
     let mouse_just_pressed = mouse_button
@@ -153,31 +172,43 @@ fn pointer_input(
         mouse_motion.clear();
         Vec2::ZERO
     };
-    let released = touch_just_released || mouse_just_released;
+    let released = touch_ended || mouse_just_released;
 
-    // Start a new drag: raycast at press position.
-    // Un strat aflat in rotatie nu accepta face-drag; camera ramane mereu libera.
+    // Start a new drag: sticker → rotatie de strat, altfel camera.
     if let Some(start_pos) = pressed_now {
+        finish_manual(&mut pointer, &mut active_rot, &mut history);
         let kind = match raycast_cubie(camera, cam_transform, start_pos, &cubie_q) {
-            Some((gp, hw, n)) if !in_rotating_layer(&active_rot, &gp) =>
-                DragKind::Face { grid_pos: gp, hit_world: hw, normal: n },
-            _ => DragKind::Camera,
+            Some(_) => DragKind::Face,
+            None => DragKind::Camera,
         };
-        pointer.drag = Some(DragData { start_screen: start_pos, kind, committed: false });
+        pointer.drag = Some(DragData { start_screen: start_pos, kind });
     }
 
     // Update ongoing drag.
-    if let Some(drag) = pointer.drag.as_mut() {
+    if let Some(drag) = pointer.drag.as_ref() {
+        let start = drag.start_screen;
         match drag.kind {
             DragKind::Camera => apply_rotation_delta(&mut cam_state, delta_now),
-            DragKind::Face { grid_pos, hit_world, normal } => {
-                if !drag.committed {
+            DragKind::Face => {
+                // Alege stratul dupa un mic prag, doar cand nicio animatie nu
+                // ruleaza (stratul trebuie sa fie asezat ca sa-i capturam starea).
+                if pointer.manual.is_none() && active_rot.0.is_none() {
                     if let Some(now) = pos_now {
-                        let total = now - drag.start_screen;
-                        if total.length() > 20.0 {
-                            if let Some(mv) = determine_move(camera, cam_transform, hit_world, normal, &grid_pos, total) {
-                                queue.0.push_back((mv, true));
-                                drag.committed = true;
+                        let total = now - start;
+                        if total.length() > DRAG_LOCK_THRESHOLD {
+                            pointer.manual = begin_manual(camera, cam_transform, start, total, &cubie_q);
+                        }
+                    }
+                }
+                // Stratul urmareste pointerul in timp real.
+                if let Some(m) = pointer.manual.as_mut() {
+                    if let Some(now) = pos_now {
+                        m.angle = ((now - start).dot(m.tangent_screen) * DRAG_ANGLE_PER_PIXEL).clamp(-PI, PI);
+                        let q = Quat::from_axis_angle(m.axis, m.angle);
+                        for (i, &entity) in m.entities.iter().enumerate() {
+                            if let Ok((_, _, mut tf)) = cubie_q.get_mut(entity) {
+                                tf.translation = q * m.initial_transforms[i].translation;
+                                tf.rotation    = q * m.initial_transforms[i].rotation;
                             }
                         }
                     }
@@ -187,8 +218,92 @@ fn pointer_input(
     }
 
     if released {
+        finish_manual(&mut pointer, &mut active_rot, &mut history);
         pointer.drag = None;
     }
+}
+
+/// Porneste o rotatie manuala: alege axa din planul fetei lovite care se
+/// aliniaza cel mai bine cu directia drag-ului si captureaza stratul.
+fn begin_manual(
+    camera: &Camera,
+    cam_transform: &GlobalTransform,
+    start_screen: Vec2,
+    drag_screen: Vec2,
+    cubie_q: &Query<(Entity, &GridPos, &mut Transform)>,
+) -> Option<ManualRotation> {
+    let (grid_pos, hit_world, normal) = raycast_cubie(camera, cam_transform, start_screen, cubie_q)?;
+    let hit_screen = camera.world_to_viewport(cam_transform, hit_world)?;
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    let layer_values = [grid_pos.x, grid_pos.y, grid_pos.z];
+
+    let mut best: Option<(f32, usize, Vec2)> = None;
+    for (i, axis) in axes.iter().enumerate() {
+        // Ca la cubul fizic: un drag pe o fata actioneaza doar straturile din
+        // planul ei, nu rotatia in jurul normalei (aia se face din fetele vecine).
+        if axis.dot(normal).abs() > 0.5 { continue; }
+        let tangent_world = axis.cross(hit_world);
+        if tangent_world.length_squared() < 1e-4 { continue; }
+        let probe = hit_world + tangent_world.normalize() * 0.2;
+        let Some(probe_screen) = camera.world_to_viewport(cam_transform, probe) else { continue; };
+        let tangent_screen = probe_screen - hit_screen;
+        if tangent_screen.length_squared() < 1.0 { continue; }
+        let tangent_unit = tangent_screen.normalize();
+        let score = drag_screen.dot(tangent_unit).abs();
+        if best.as_ref().map_or(true, |(b, _, _)| score > *b) {
+            best = Some((score, i, tangent_unit));
+        }
+    }
+    let (_, axis_idx, tangent_screen) = best?;
+
+    let mut entities = Vec::new();
+    let mut initial_transforms = Vec::new();
+    for (entity, gp, tf) in cubie_q.iter() {
+        let layer_val = match axis_idx { 0 => gp.x, 1 => gp.y, _ => gp.z };
+        if layer_val == layer_values[axis_idx] {
+            entities.push(entity);
+            initial_transforms.push(*tf);
+        }
+    }
+    Some(ManualRotation {
+        axis: axes[axis_idx],
+        layer_axis: axis_idx as u8,
+        layer_value: layer_values[axis_idx],
+        entities,
+        initial_transforms,
+        tangent_screen,
+        angle: 0.0,
+    })
+}
+
+/// Incheie rotatia manuala: snap la cel mai apropiat multiplu de 90°, animat
+/// din unghiul curent; mutarea rezultata (daca nu e nula) intra in history.
+fn finish_manual(
+    pointer: &mut PointerState,
+    active_rot: &mut ActiveRotation,
+    history: &mut MoveHistory,
+) {
+    let Some(m) = pointer.manual.take() else { return; };
+    let quarter_turns = (m.angle / FRAC_PI_2).round() as i32;
+    let target = quarter_turns as f32 * FRAC_PI_2;
+    let mv = CubeMove {
+        rotation_axis: m.axis,
+        layer_axis: m.layer_axis,
+        layer_value: m.layer_value,
+        angle: target,
+    };
+    if quarter_turns != 0 {
+        history.0.push(mv);
+    }
+    let remaining = (target - m.angle).abs() / FRAC_PI_2;
+    active_rot.0 = Some(RotationState {
+        cube_move: mv,
+        elapsed: 0.0,
+        duration: (ROTATION_DURATION * remaining).clamp(0.04, ROTATION_DURATION),
+        entities: m.entities,
+        initial_transforms: m.initial_transforms,
+        start_angle: m.angle,
+    });
 }
 
 fn update_camera_transform(
@@ -206,7 +321,7 @@ fn raycast_cubie(
     camera: &Camera,
     cam_transform: &GlobalTransform,
     screen_pos: Vec2,
-    cubie_q: &Query<(Entity, &GridPos, &Transform)>,
+    cubie_q: &Query<(Entity, &GridPos, &mut Transform)>,
 ) -> Option<(GridPos, Vec3, Vec3)> {
     let ray = camera.viewport_to_world(cam_transform, screen_pos)?;
     let origin = ray.origin;
@@ -250,45 +365,6 @@ fn ray_aabb_intersect(origin: Vec3, dir: Vec3, aabb_min: Vec3, aabb_max: Vec3) -
     }
     if tmax < 0.0 { return None; }
     Some(if tmin > 0.0 { (tmin, entry_axis) } else { (tmax, entry_axis) })
-}
-
-fn determine_move(
-    camera: &Camera,
-    cam_transform: &GlobalTransform,
-    hit_world: Vec3,
-    normal: Vec3,
-    grid_pos: &GridPos,
-    drag_screen: Vec2,
-) -> Option<CubeMove> {
-    let hit_screen = camera.world_to_viewport(cam_transform, hit_world)?;
-    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
-    let layer_values = [grid_pos.x, grid_pos.y, grid_pos.z];
-
-    let mut best: Option<(f32, usize, f32)> = None;
-    for (i, axis) in axes.iter().enumerate() {
-        // Ca la cubul fizic: un drag pe o fata actioneaza doar straturile din
-        // planul ei, nu rotatia in jurul normalei (aia se face din fetele vecine).
-        if axis.dot(normal).abs() > 0.5 { continue; }
-        let tangent_world = axis.cross(hit_world);
-        if tangent_world.length_squared() < 1e-4 { continue; }
-        let probe = hit_world + tangent_world.normalize() * 0.2;
-        let Some(probe_screen) = camera.world_to_viewport(cam_transform, probe) else { continue; };
-        let tangent_screen = probe_screen - hit_screen;
-        if tangent_screen.length_squared() < 1.0 { continue; }
-        let score = drag_screen.dot(tangent_screen.normalize());
-        let abs_score = score.abs();
-        if best.as_ref().map_or(true, |(b, _, _)| abs_score > *b) {
-            best = Some((abs_score, i, score.signum()));
-        }
-    }
-
-    let (_, axis_idx, sign) = best?;
-    Some(CubeMove {
-        rotation_axis: axes[axis_idx],
-        layer_axis: axis_idx as u8,
-        layer_value: layer_values[axis_idx],
-        angle: sign * FRAC_PI_2,
-    })
 }
 
 fn camera_zoom(
@@ -360,6 +436,8 @@ pub struct RotationState {
     pub duration: f32,
     pub entities: Vec<Entity>,
     pub initial_transforms: Vec<Transform>,
+    /// Unghiul de pornire — nenul cand animatia continua un drag manual.
+    pub start_angle: f32,
 }
 
 #[derive(Resource, Default)]
@@ -423,6 +501,7 @@ fn process_rotation(
     mut active: ResMut<ActiveRotation>,
     mut move_queue: ResMut<MoveQueue>,
     mut history: ResMut<MoveHistory>,
+    pointer: Res<PointerState>,
     mut cubie_query: Query<(Entity, &mut GridPos, &mut Transform)>,
     time: Res<Time>,
 ) {
@@ -431,8 +510,8 @@ fn process_rotation(
     if let Some(state) = active.0.as_mut() {
         state.elapsed += time.delta_seconds();
         let t = (state.elapsed / state.duration).min(1.0);
-        let q = Quat::from_axis_angle(state.cube_move.rotation_axis,
-                                      state.cube_move.angle * smoothstep(t));
+        let angle = state.start_angle + (state.cube_move.angle - state.start_angle) * smoothstep(t);
+        let q = Quat::from_axis_angle(state.cube_move.rotation_axis, angle);
         for (i, &entity) in state.entities.iter().enumerate() {
             if let Ok((_, _, mut tf)) = cubie_query.get_mut(entity) {
                 tf.translation = q * state.initial_transforms[i].translation;
@@ -456,7 +535,8 @@ fn process_rotation(
                 tf.rotation    = snap_rotation(tf.rotation);
             }
         }
-    } else if active.0.is_none() {
+    } else if active.0.is_none() && pointer.manual.is_none() {
+        // Coada asteapta cat timp un strat e tinut in mana (drag manual).
         if let Some((mv, record)) = move_queue.0.pop_front() {
             // History reflecta doar mutari executate: push abia la pornirea rotatiei,
             // ca Solve/Scramble apasate in timpul animatiilor sa nu-l corupa.
@@ -477,6 +557,7 @@ fn process_rotation(
                 duration,
                 entities,
                 initial_transforms,
+                start_angle: 0.0,
             });
         }
     }
@@ -504,26 +585,52 @@ fn egui_ui(
 ) {
     let ctx = contexts.ctx_mut();
 
-    // 1. Hint taste — sus-stanga
-    egui::Area::new("hints".into())
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
-        .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new(
-                    "Fete: R L U D F B  |  Felii: M E S  |  Shift = prime\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
-                )
-                .size(12.0)
-                .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120))
-            );
-        });
+    // Layout compact pe ecrane inguste (telefoane): butoane mari, jos, si
+    // hint-uri de gesturi in loc de taste.
+    let compact = ctx.screen_rect().width() < 700.0;
 
-    // 2. Panou butoane — ancorat fix sub textul de mai sus
+    // 1. Hint-uri
+    if compact {
+        egui::Area::new("hints".into())
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 10.0))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Trage un sticker = rotesti stratul\nTrage in gol = rotesti cubul  ·  Pinch = zoom")
+                            .size(12.0)
+                            .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120)),
+                    );
+                });
+            });
+    } else {
+        egui::Area::new("hints".into())
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Fete: R L U D F B  |  Felii: M E S  |  Shift = prime\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
+                    )
+                    .size(12.0)
+                    .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120))
+                );
+            });
+    }
+
+    // 2. Panou butoane: jos-centrat pe mobil (tinte de atins mari), sus-stanga pe desktop.
+    let (anchor, offset) = if compact {
+        (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
+    } else {
+        (egui::Align2::LEFT_TOP, egui::vec2(12.0, 60.0))
+    };
+    let btn_size = if compact { egui::vec2(150.0, 52.0) } else { egui::vec2(130.0, 32.0) };
+    let txt_size = if compact { 18.0 } else { 16.0 };
+
     egui::Area::new("controls_area".into())
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 60.0)) // 60px mai jos fata de colt
+        .anchor(anchor, offset)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // Buton Scramble
-                if ui.button(egui::RichText::new("🎲 SCRAMBLE").size(16.0).color(egui::Color32::from_rgb(180, 180, 255))).clicked() {
+                if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("🎲 SCRAMBLE").size(txt_size).color(egui::Color32::from_rgb(180, 180, 255)))).clicked() {
                     queue.0.clear();
                     let seed = (time.elapsed_seconds() * 100_000.0) as u64;
                     let mut rng = Rng::new(seed);
@@ -547,7 +654,7 @@ fn egui_ui(
                 ui.add_space(10.0);
 
                 // Buton Solve
-                if ui.button(egui::RichText::new("✔ SOLVE").size(16.0).color(egui::Color32::from_rgb(150, 255, 180))).clicked() && !history.0.is_empty() {
+                if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("✔ SOLVE").size(txt_size).color(egui::Color32::from_rgb(150, 255, 180)))).clicked() && !history.0.is_empty() {
                     queue.0.clear();
                     let solution: Vec<CubeMove> = history.0.drain(..).rev()
                         .map(|m| m.inverse())
