@@ -108,6 +108,31 @@
       if ('serviceWorker' in navigator) {
         addEventListener('load', function () { navigator.serviceWorker.register('/sw.js'); });
       }
+
+      // Erorile fatale (panic in WASM ajunge ca excepție JS) primesc un
+      // banner vizibil in loc de un canvas înghețat în tăcere.
+      (function () {
+        var shown = false;
+        function showCrashBanner() {
+          if (shown) return;
+          shown = true;
+          var el = document.createElement('div');
+          el.style.cssText =
+            'position:fixed;top:0;left:0;right:0;z-index:99;padding:10px 14px;' +
+            'background:#b81205;color:#fff;font:14px -apple-system,sans-serif;text-align:center;';
+          el.textContent = 'A apărut o eroare neașteptată — reîncarcă pagina. Detalii în consolă.';
+          var btn = document.createElement('button');
+          btn.textContent = 'Reîncarcă';
+          btn.style.cssText = 'margin-left:12px;padding:4px 14px;border:0;border-radius:6px;cursor:pointer;';
+          btn.onclick = function () { location.reload(); };
+          el.appendChild(btn);
+          document.body.appendChild(el);
+        }
+        addEventListener('error', function (e) {
+          if (e.error) showCrashBanner();
+        });
+        addEventListener('unhandledrejection', showCrashBanner);
+      })();
     </script>
   </body>
 </html>
