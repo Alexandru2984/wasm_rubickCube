@@ -100,6 +100,8 @@ fn apply_rotation_delta(state: &mut OrbitCamera, delta: Vec2) {
     state.rotation = state.rotation.normalize();
 }
 
+// Sistemele Bevy aduna firesc multe resurse; limita clippy nu ajuta aici.
+#[allow(clippy::too_many_arguments)]
 fn pointer_input(
     mut pointer: ResMut<PointerState>,
     mut cam_state: ResMut<OrbitCamera>,
@@ -250,7 +252,7 @@ fn begin_manual(
         if tangent_screen.length_squared() < 1.0 { continue; }
         let tangent_unit = tangent_screen.normalize();
         let score = drag_screen.dot(tangent_unit).abs();
-        if best.as_ref().map_or(true, |(b, _, _)| score > *b) {
+        if best.as_ref().is_none_or(|(b, _, _)| score > *b) {
             best = Some((score, i, tangent_unit));
         }
     }
@@ -334,7 +336,7 @@ fn raycast_cubie(
         let local_origin = inv.transform_point3(origin);
         let local_dir = inv.transform_vector3(dir);
         if let Some((t, entry_axis)) = ray_aabb_intersect(local_origin, local_dir, Vec3::splat(-half), Vec3::splat(half)) {
-            if t > 0.0 && best.as_ref().map_or(true, |(bt, ..)| t < *bt) {
+            if t > 0.0 && best.as_ref().is_none_or(|(bt, ..)| t < *bt) {
                 let mut local_normal = Vec3::ZERO;
                 local_normal[entry_axis] = if local_dir[entry_axis] > 0.0 { -1.0 } else { 1.0 };
                 let world_normal = (transform.rotation * local_normal).normalize();
