@@ -16,7 +16,7 @@ fn main() {
                 title: "Rubik's Cube".into(),
                 canvas: Some("#bevy".to_owned()),
                 fit_canvas_to_parent: true,
-                prevent_default_event_handling: false,
+                prevent_default_event_handling: true,
                 ..default()
             }),
             ..default()
@@ -26,14 +26,15 @@ fn main() {
         .insert_resource(OrbitCamera {
             rotation: Quat::from_euler(EulerRot::YXZ, 0.5, 0.35, 0.0),
             radius: 10.0,
-            dragging: false,
         })
+        .insert_resource(PointerState::default())
         .insert_resource(MoveQueue::default())
         .insert_resource(MoveHistory::default())
         .insert_resource(ActiveRotation::default())
         .add_systems(Startup, setup)
         .add_systems(Update, (
-            camera_orbit,
+            pointer_input,
+            update_camera_transform,
             camera_zoom,
             keyboard_input,
             process_rotation,
@@ -48,51 +49,229 @@ fn main() {
 struct OrbitCamera {
     rotation: Quat,
     radius: f32,
-    dragging: bool,
 }
 
-fn camera_orbit(
-    mut state: ResMut<OrbitCamera>,
+#[derive(Resource, Default)]
+struct PointerState {
+    drag: Option<DragData>,
+    prev_pinch_distance: Option<f32>,
+}
+
+struct DragData {
+    start_screen: Vec2,
+    kind: DragKind,
+    committed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum DragKind {
+    Camera,
+    Face { grid_pos: GridPos, hit_world: Vec3 },
+}
+
+fn apply_rotation_delta(state: &mut OrbitCamera, delta: Vec2) {
+    if delta == Vec2::ZERO { return; }
+    let sensitivity = 0.006;
+    let up = state.rotation * Vec3::Y;
+    let yaw_sign = if up.y >= 0.0 { -1.0 } else { 1.0 };
+    let yaw = Quat::from_rotation_y(yaw_sign * delta.x * sensitivity);
+    state.rotation = yaw * state.rotation;
+    let right = state.rotation * Vec3::X;
+    let pitch = Quat::from_axis_angle(right, delta.y * sensitivity);
+    state.rotation = pitch * state.rotation;
+    state.rotation = state.rotation.normalize();
+}
+
+fn pointer_input(
+    mut pointer: ResMut<PointerState>,
+    mut cam_state: ResMut<OrbitCamera>,
+    active_rot: Res<ActiveRotation>,
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mouse_button: Res<ButtonInput<MouseButton>>,
-    mut motion: EventReader<MouseMotion>,
-    mut query: Query<&mut Transform, With<Camera3d>>,
+    mut mouse_motion: EventReader<MouseMotion>,
+    touches: Res<Touches>,
+    cubie_q: Query<(Entity, &GridPos, &Transform)>,
+    mut queue: ResMut<MoveQueue>,
+    mut history: ResMut<MoveHistory>,
     mut egui_ctx: EguiContexts,
 ) {
-    // Nu roti camera daca mouse-ul e pe panoul egui
-    if egui_ctx.ctx_mut().is_using_pointer() || egui_ctx.ctx_mut().wants_pointer_input() {
-        state.dragging = false;
-        motion.clear();
+    let egui_active = egui_ctx.ctx_mut().is_using_pointer() || egui_ctx.ctx_mut().wants_pointer_input();
+
+    if egui_active || active_rot.0.is_some() {
+        pointer.drag = None;
+        pointer.prev_pinch_distance = None;
+        mouse_motion.clear();
         return;
     }
 
-    if mouse_button.just_pressed(MouseButton::Left) {
-        state.dragging = true;
-    }
-    if mouse_button.just_released(MouseButton::Left) {
-        state.dragging = false;
-    }
+    let Ok((camera, cam_transform)) = camera_q.get_single() else { return; };
+    let Ok(window) = windows.get_single() else { return; };
 
-    if state.dragging {
-        for ev in motion.read() {
-            let sensitivity = 0.006;
-            let up = state.rotation * Vec3::Y;
-            let yaw_sign = if up.y >= 0.0 { -1.0 } else { 1.0 };
-            let yaw = Quat::from_rotation_y(yaw_sign * ev.delta.x * sensitivity);
-            state.rotation = yaw * state.rotation;
-            let right = state.rotation * Vec3::X;
-            let pitch = Quat::from_axis_angle(right, ev.delta.y * sensitivity);
-            state.rotation = pitch * state.rotation;
-            state.rotation = state.rotation.normalize();
+    // 2+ fingers → pinch zoom, abort any single-pointer drag
+    let touch_positions: Vec<Vec2> = touches.iter().map(|t| t.position()).collect();
+    if touch_positions.len() >= 2 {
+        let d = touch_positions[0].distance(touch_positions[1]);
+        if let Some(prev) = pointer.prev_pinch_distance {
+            cam_state.radius = (cam_state.radius - (d - prev) * 0.03).clamp(3.5, 30.0);
         }
+        pointer.prev_pinch_distance = Some(d);
+        pointer.drag = None;
+        mouse_motion.clear();
+        return;
+    }
+    pointer.prev_pinch_distance = None;
+
+    // Unified single pointer: touch wins over mouse when present.
+    let touch_pos = touch_positions.first().copied();
+    let touch_delta: Vec2 = touches.iter().next().map(|t| t.delta()).unwrap_or(Vec2::ZERO);
+    let touch_just_pressed = touches.iter_just_pressed().next().map(|t| t.position());
+    let touch_just_released = touches.iter_just_released().next().is_some();
+
+    let mouse_down = mouse_button.pressed(MouseButton::Left);
+    let mouse_just_pressed = mouse_button
+        .just_pressed(MouseButton::Left)
+        .then(|| window.cursor_position())
+        .flatten();
+    let mouse_just_released = mouse_button.just_released(MouseButton::Left);
+
+    let pressed_now = touch_just_pressed.or(mouse_just_pressed);
+    let pos_now: Option<Vec2> = touch_pos.or_else(|| if mouse_down { window.cursor_position() } else { None });
+    let delta_now: Vec2 = if touch_pos.is_some() {
+        touch_delta
+    } else if mouse_down {
+        mouse_motion.read().fold(Vec2::ZERO, |acc, ev| acc + ev.delta)
     } else {
-        motion.clear();
+        mouse_motion.clear();
+        Vec2::ZERO
+    };
+    let released = touch_just_released || mouse_just_released;
+
+    // Start a new drag: raycast at press position.
+    if let Some(start_pos) = pressed_now {
+        let kind = match raycast_cubie(camera, cam_transform, start_pos, &cubie_q) {
+            Some((gp, hw)) => DragKind::Face { grid_pos: gp, hit_world: hw },
+            None => DragKind::Camera,
+        };
+        pointer.drag = Some(DragData { start_screen: start_pos, kind, committed: false });
     }
 
+    // Update ongoing drag.
+    if let Some(drag) = pointer.drag.as_mut() {
+        match drag.kind {
+            DragKind::Camera => apply_rotation_delta(&mut cam_state, delta_now),
+            DragKind::Face { grid_pos, hit_world } => {
+                if !drag.committed {
+                    if let Some(now) = pos_now {
+                        let total = now - drag.start_screen;
+                        if total.length() > 20.0 {
+                            if let Some(mv) = determine_move(camera, cam_transform, hit_world, &grid_pos, total) {
+                                queue.0.push_back(mv);
+                                history.0.push(mv);
+                                drag.committed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if released {
+        pointer.drag = None;
+    }
+}
+
+fn update_camera_transform(
+    state: Res<OrbitCamera>,
+    mut query: Query<&mut Transform, With<Camera3d>>,
+) {
     if let Ok(mut transform) = query.get_single_mut() {
         let position = state.rotation * Vec3::new(0.0, 0.0, state.radius);
         transform.translation = position;
         transform.look_at(Vec3::ZERO, state.rotation * Vec3::Y);
     }
+}
+
+fn raycast_cubie(
+    camera: &Camera,
+    cam_transform: &GlobalTransform,
+    screen_pos: Vec2,
+    cubie_q: &Query<(Entity, &GridPos, &Transform)>,
+) -> Option<(GridPos, Vec3)> {
+    let ray = camera.viewport_to_world(cam_transform, screen_pos)?;
+    let origin = ray.origin;
+    let dir: Vec3 = ray.direction.as_vec3();
+    let half = CUBIE_SIZE / 2.0;
+
+    let mut best: Option<(f32, GridPos, Vec3)> = None;
+    for (_entity, grid_pos, transform) in cubie_q.iter() {
+        let inv = transform.compute_matrix().inverse();
+        let local_origin = inv.transform_point3(origin);
+        let local_dir = inv.transform_vector3(dir);
+        if let Some(t) = ray_aabb_intersect(local_origin, local_dir, Vec3::splat(-half), Vec3::splat(half)) {
+            if t > 0.0 && best.as_ref().map_or(true, |(bt, _, _)| t < *bt) {
+                best = Some((t, *grid_pos, origin + dir * t));
+            }
+        }
+    }
+    best.map(|(_, gp, hw)| (gp, hw))
+}
+
+fn ray_aabb_intersect(origin: Vec3, dir: Vec3, aabb_min: Vec3, aabb_max: Vec3) -> Option<f32> {
+    let mut tmin = f32::NEG_INFINITY;
+    let mut tmax = f32::INFINITY;
+    for i in 0..3 {
+        let o = origin[i];
+        let d = dir[i];
+        if d.abs() < 1e-8 {
+            if o < aabb_min[i] || o > aabb_max[i] { return None; }
+        } else {
+            let t1 = (aabb_min[i] - o) / d;
+            let t2 = (aabb_max[i] - o) / d;
+            let (tn, tf) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+            if tn > tmin { tmin = tn; }
+            if tf < tmax { tmax = tf; }
+            if tmin > tmax { return None; }
+        }
+    }
+    if tmax < 0.0 { return None; }
+    Some(if tmin > 0.0 { tmin } else { tmax })
+}
+
+fn determine_move(
+    camera: &Camera,
+    cam_transform: &GlobalTransform,
+    hit_world: Vec3,
+    grid_pos: &GridPos,
+    drag_screen: Vec2,
+) -> Option<CubeMove> {
+    let hit_screen = camera.world_to_viewport(cam_transform, hit_world)?;
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    let layer_values = [grid_pos.x, grid_pos.y, grid_pos.z];
+
+    let mut best: Option<(f32, usize, f32)> = None;
+    for (i, axis) in axes.iter().enumerate() {
+        let tangent_world = axis.cross(hit_world);
+        if tangent_world.length_squared() < 1e-4 { continue; }
+        let probe = hit_world + tangent_world.normalize() * 0.2;
+        let Some(probe_screen) = camera.world_to_viewport(cam_transform, probe) else { continue; };
+        let tangent_screen = probe_screen - hit_screen;
+        if tangent_screen.length_squared() < 1.0 { continue; }
+        let score = drag_screen.dot(tangent_screen.normalize());
+        let abs_score = score.abs();
+        if best.as_ref().map_or(true, |(b, _, _)| abs_score > *b) {
+            best = Some((abs_score, i, score.signum()));
+        }
+    }
+
+    let (_, axis_idx, sign) = best?;
+    Some(CubeMove {
+        rotation_axis: axes[axis_idx],
+        layer_axis: axis_idx as u8,
+        layer_value: layer_values[axis_idx],
+        angle: sign * FRAC_PI_2,
+    })
 }
 
 fn camera_zoom(
@@ -309,7 +488,7 @@ fn egui_ui(
         .show(ctx, |ui| {
             ui.label(
                 egui::RichText::new(
-                    "Fete: R L U D F B  |  Felii: M E S  |  Shift = prime\nDrag = rotire vedere  |  Scroll = zoom"
+                    "Fete: R L U D F B  |  Felii: M E S  |  Shift = prime\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
                 )
                 .size(12.0)
                 .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120))

@@ -1,10 +1,10 @@
 # Rust / Cargo
 /target/
 frontend/target/
-Cargo.lock
 
 # Trunk development cache
 /.trunk/
+frontend/dist/
 
 # Backend Gleam / Erlang
 backend/build/

@@ -2,17 +2,29 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>Rubik's Cube</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { background: #1a1a2e; overflow: hidden; }
+      html, body {
+        background: #1a1a2e;
+        overflow: hidden;
+        overscroll-behavior: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        touch-action: none;
+      }
       canvas {
         display: block;
         width: 100vw;
         height: 100vh;
+        touch-action: none;
+        -webkit-tap-highlight-color: transparent;
       }
     </style>
-  </head>
+      <script defer src="https://analytics.micutu.com/script.js" data-website-id="ba3c0e81-cd09-43aa-8497-690b000af189"></script>
+</head>
   <body>
     <canvas id="bevy"></canvas>
     <link data-trunk rel="rust" data-wasm-opt="z" />
