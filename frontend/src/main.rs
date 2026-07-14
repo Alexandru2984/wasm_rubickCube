@@ -18,6 +18,14 @@ const DRAG_LOCK_THRESHOLD: f32 = 10.0;
 const DRAG_ANGLE_PER_PIXEL: f32 = FRAC_PI_2 / 130.0;
 
 fn main() {
+    #[cfg(target_arch = "wasm32")]
+    console_error_panic_hook::set_once();
+
+    let size = storage_get(STORE_SIZE)
+        .and_then(|s| s.parse::<i32>().ok())
+        .filter(|n| (2..=5).contains(n))
+        .unwrap_or(3);
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -33,8 +41,9 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.18)))
         .insert_resource(OrbitCamera {
             rotation: Quat::from_euler(EulerRot::YXZ, 0.5, 0.35, 0.0),
-            radius: 10.0,
+            radius: camera_radius(size),
         })
+        .insert_resource(CubeSize(size))
         .insert_resource(PointerState::default())
         .insert_resource(MoveQueue::default())
         .insert_resource(MoveHistory::default())
@@ -51,10 +60,15 @@ fn main() {
             process_rotation,
             run_solver,
             update_game_phase,
+            rebuild_cube,
             persist_state,
             egui_ui,
         ))
         .run();
+}
+
+fn camera_radius(n: i32) -> f32 {
+    3.4 * n as f32
 }
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -402,6 +416,20 @@ fn camera_zoom(
 
 // ── Cube moves ────────────────────────────────────────────────────────────────
 
+/// Grila foloseste "coordonate dublate" (pas 2), ca si cuburile pare (2x2,
+/// 4x4) sa aiba pozitii intregi: n=3 → straturi -2,0,2; n=4 → -3,-1,1,3.
+/// Stratul exterior are valoarea `max_c = n - 1`; world = grila * 0.5.
+fn max_coord(n: i32) -> i32 {
+    n - 1
+}
+
+/// Marimea cubului (n x n x n), 2..=5.
+#[derive(Resource)]
+pub struct CubeSize(pub i32);
+
+/// layer_value sentinel: mutarea roteste toate straturile (x/y/z, cub intreg).
+pub const LAYER_ALL: i32 = 99;
+
 #[derive(Clone, Copy, Debug)]
 pub struct CubeMove {
     pub rotation_axis: Vec3,
@@ -411,21 +439,21 @@ pub struct CubeMove {
 }
 
 impl CubeMove {
-    // Fete exterioare
-    fn r()  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value:  1, angle: -FRAC_PI_2 } }
-    fn ri() -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value:  1, angle:  FRAC_PI_2 } }
-    fn l()  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: -1, angle:  FRAC_PI_2 } }
-    fn li() -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: -1, angle: -FRAC_PI_2 } }
-    fn u()  -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value:  1, angle: -FRAC_PI_2 } }
-    fn ui() -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value:  1, angle:  FRAC_PI_2 } }
-    fn d()  -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: -1, angle:  FRAC_PI_2 } }
-    fn di() -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: -1, angle: -FRAC_PI_2 } }
-    fn f()  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value:  1, angle: -FRAC_PI_2 } }
-    fn fi() -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value:  1, angle:  FRAC_PI_2 } }
-    fn b()  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: -1, angle:  FRAC_PI_2 } }
-    fn bi() -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: -1, angle: -FRAC_PI_2 } }
+    // Fete exterioare; `max` = coordonata dublata a stratului exterior.
+    fn r(max: i32)  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value:  max, angle: -FRAC_PI_2 } }
+    fn ri(max: i32) -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value:  max, angle:  FRAC_PI_2 } }
+    fn l(max: i32)  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: -max, angle:  FRAC_PI_2 } }
+    fn li(max: i32) -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: -max, angle: -FRAC_PI_2 } }
+    fn u(max: i32)  -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value:  max, angle: -FRAC_PI_2 } }
+    fn ui(max: i32) -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value:  max, angle:  FRAC_PI_2 } }
+    fn d(max: i32)  -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: -max, angle:  FRAC_PI_2 } }
+    fn di(max: i32) -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: -max, angle: -FRAC_PI_2 } }
+    fn f(max: i32)  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value:  max, angle: -FRAC_PI_2 } }
+    fn fi(max: i32) -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value:  max, angle:  FRAC_PI_2 } }
+    fn b(max: i32)  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: -max, angle:  FRAC_PI_2 } }
+    fn bi(max: i32) -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: -max, angle: -FRAC_PI_2 } }
 
-    // Felii din mijloc (Slice moves)
+    // Felii din mijloc (doar cuburi impare)
     // M: Middle, aceeasi directie ca L (+X)
     fn m()  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: 0, angle:  FRAC_PI_2 } }
     fn mi() -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: 0, angle: -FRAC_PI_2 } }
@@ -435,6 +463,19 @@ impl CubeMove {
     // S: Standing, aceeasi directie ca F (-Z)
     fn s()  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: 0, angle: -FRAC_PI_2 } }
     fn si() -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: 0, angle:  FRAC_PI_2 } }
+
+    // Rotatii de cub intreg (notatia x/y/z): ca R/U/F dar pe toate straturile.
+    fn x()  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: LAYER_ALL, angle: -FRAC_PI_2 } }
+    fn xi() -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: LAYER_ALL, angle:  FRAC_PI_2 } }
+    fn y()  -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: LAYER_ALL, angle: -FRAC_PI_2 } }
+    fn yi() -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: LAYER_ALL, angle:  FRAC_PI_2 } }
+    fn z()  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: LAYER_ALL, angle: -FRAC_PI_2 } }
+    fn zi() -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: LAYER_ALL, angle:  FRAC_PI_2 } }
+
+    /// Cubie-ul cu valoarea `layer_val` pe axa mutarii participa la rotatie?
+    fn affects(&self, layer_val: i32) -> bool {
+        self.layer_value == LAYER_ALL || layer_val == self.layer_value
+    }
 
     fn inverse(self) -> Self {
         Self { angle: -self.angle, ..self }
@@ -511,9 +552,16 @@ pub struct ActiveRotation(pub Option<RotationState>);
 
 // ── Persistenta (localStorage) ────────────────────────────────────────────────
 
-const STORE_HISTORY: &str = "cube.history";
-const STORE_REDO: &str = "cube.redo";
-const STORE_BEST: &str = "cube.best";
+// Chei .v2: formatul codec s-a schimbat la coordonate dublate (NxN), deci
+// datele salvate de versiunea veche nu mai sunt citite.
+const STORE_HISTORY: &str = "cube.v2.history";
+const STORE_REDO: &str = "cube.v2.redo";
+const STORE_SIZE: &str = "cube.v2.size";
+
+/// Recordul se tine separat pe fiecare marime de cub.
+fn store_best_key(n: i32) -> String {
+    format!("cube.v2.best.{n}")
+}
 
 #[cfg(target_arch = "wasm32")]
 fn local_storage() -> Option<web_sys::Storage> {
@@ -540,13 +588,15 @@ fn storage_get(_key: &str) -> Option<String> {
     None
 }
 
-/// O mutare = 3 cifre: axa (0-2), stratul (+1 → 0-2), sferturi de tura (+2 → 0-4).
+/// O mutare = 3 cifre: axa (0-2), stratul in coordonate dublate (+4 → 0-8,
+/// iar 9 = tot cubul), sferturi de tura (+2 → 0-4).
 fn encode_moves(moves: &[CubeMove]) -> String {
     moves
         .iter()
         .map(|m| {
             let quarters = (m.angle / FRAC_PI_2).round() as i32;
-            format!("{}{}{}", m.layer_axis, m.layer_value + 1, quarters + 2)
+            let value = if m.layer_value == LAYER_ALL { 9 } else { m.layer_value + 4 };
+            format!("{}{}{}", m.layer_axis, value, quarters + 2)
         })
         .collect()
 }
@@ -561,9 +611,10 @@ fn decode_moves(s: &str) -> Option<Vec<CubeMove>> {
         .chunks(3)
         .map(|c| {
             let axis = (c[0] as char).to_digit(10)?;
-            let value = (c[1] as char).to_digit(10)? as i32 - 1;
+            let raw_value = (c[1] as char).to_digit(10)? as i32;
+            let value = if raw_value == 9 { LAYER_ALL } else { raw_value - 4 };
             let quarters = (c[2] as char).to_digit(10)? as i32 - 2;
-            if axis > 2 || !(-1..=1).contains(&value) || quarters == 0 || !(-2..=2).contains(&quarters) {
+            if axis > 2 || quarters == 0 || !(-2..=2).contains(&quarters) {
                 return None;
             }
             Some(CubeMove {
@@ -579,12 +630,13 @@ fn decode_moves(s: &str) -> Option<Vec<CubeMove>> {
 /// La pornire: reconstruieste cubul aplicand instant istoricul salvat, ca un
 /// refresh sa nu piarda nici starea si nici capacitatea Solve-ului de a o desface.
 fn restore_state(
+    size: Res<CubeSize>,
     mut history: ResMut<MoveHistory>,
     mut redo: ResMut<RedoStack>,
     mut stats: ResMut<GameStats>,
     mut cubies: Query<(&mut GridPos, &mut Transform)>,
 ) {
-    stats.best_time = storage_get(STORE_BEST).and_then(|s| s.parse().ok());
+    stats.best_time = storage_get(&store_best_key(size.0)).and_then(|s| s.parse().ok());
     if let Some(moves) = storage_get(STORE_REDO).and_then(|s| decode_moves(&s)) {
         redo.0 = moves;
     }
@@ -595,10 +647,10 @@ fn restore_state(
         let q = Quat::from_axis_angle(mv.rotation_axis, mv.angle);
         for (mut gp, mut tf) in cubies.iter_mut() {
             let layer_val = match mv.layer_axis { 0 => gp.x, 1 => gp.y, _ => gp.z };
-            if layer_val != mv.layer_value { continue; }
+            if !mv.affects(layer_val) { continue; }
             let (nx, ny, nz) = rotate_grid_pos(gp.x, gp.y, gp.z, mv.rotation_axis, mv.angle);
             gp.x = nx; gp.y = ny; gp.z = nz;
-            tf.translation = Vec3::new(nx as f32, ny as f32, nz as f32);
+            tf.translation = Vec3::new(nx as f32, ny as f32, nz as f32) * 0.5;
             tf.rotation = snap_rotation(q * tf.rotation);
         }
     }
@@ -619,6 +671,14 @@ fn collect_cubies(cubies: &Query<(&GridPos, &Transform)>) -> Vec<(IVec3, Quat)> 
         .collect()
 }
 
+/// Pozitiile in unitati simple (-1..1), cum le asteapta solver-ul 3x3.
+fn collect_cubies_for_solver(cubies: &Query<(&GridPos, &Transform)>) -> Vec<(IVec3, Quat)> {
+    cubies
+        .iter()
+        .map(|(gp, tf)| (IVec3::new(gp.x / 2, gp.y / 2, gp.z / 2), tf.rotation))
+        .collect()
+}
+
 /// Tranzitiile de faza care depind de "cubul s-a asezat": scramble terminat si
 /// detectarea starii rezolvate. Detectia foloseste facelets (fete uniforme),
 /// nu compararea orientarilor — centrele se pot rasuci invizibil pe loc.
@@ -626,6 +686,7 @@ fn update_game_phase(
     queue: Res<MoveQueue>,
     active: Res<ActiveRotation>,
     pointer: Res<PointerState>,
+    size: Res<CubeSize>,
     mut stats: ResMut<GameStats>,
     time: Res<Time>,
     cubies: Query<(&GridPos, &Transform)>,
@@ -635,12 +696,12 @@ fn update_game_phase(
 
     match stats.phase {
         Phase::Scrambling => stats.phase = Phase::Ready,
-        Phase::Running if solver::is_solved(&collect_cubies(&cubies)) => {
+        Phase::Running if solver::is_solved(&collect_cubies(&cubies), max_coord(size.0)) => {
             let t = time.elapsed_seconds_f64() - stats.start_time;
             let is_best = stats.best_time.is_none_or(|b| t < b);
             if is_best {
                 stats.best_time = Some(t);
-                storage_set(STORE_BEST, &format!("{t}"));
+                storage_set(&store_best_key(size.0), &format!("{t}"));
             }
             stats.phase = Phase::Solved { time: t, is_best };
         }
@@ -651,6 +712,7 @@ fn update_game_phase(
 /// Executa rezolvarea Kociemba ceruta de butonul SOLVE. Ruleaza la un frame
 /// dupa click (UI-ul apuca sa arate starea de lucru), asteapta cubul asezat,
 /// si genereaza tabelele la prima folosire.
+#[allow(clippy::too_many_arguments)]
 fn run_solver(
     mut ctx: ResMut<SolverContext>,
     mut queue: ResMut<MoveQueue>,
@@ -658,9 +720,16 @@ fn run_solver(
     mut redo: ResMut<RedoStack>,
     active: Res<ActiveRotation>,
     pointer: Res<PointerState>,
+    size: Res<CubeSize>,
     cubies: Query<(&GridPos, &Transform)>,
 ) {
     if !ctx.pending { return; }
+    // Kociemba e strict pentru 3x3; butonul e dezactivat altfel, dar pastram
+    // si garda, in caz ca dimensiunea se schimba cu pending setat.
+    if size.0 != 3 {
+        ctx.pending = false;
+        return;
+    }
     let settled = queue.0.is_empty() && active.0.is_none() && pointer.manual.is_none();
     if !settled { return; }
 
@@ -672,7 +741,7 @@ fn run_solver(
     }
     ctx.pending = false;
 
-    let Some(moves) = solver::solve_scene(ctx.table.as_ref().unwrap(), &collect_cubies(&cubies)) else {
+    let Some(moves) = solver::solve_scene(ctx.table.as_ref().unwrap(), &collect_cubies_for_solver(&cubies)) else {
         warn!("solver: starea cubului nu a putut fi citita");
         return;
     };
@@ -704,6 +773,7 @@ fn keyboard_input(
     mut history: ResMut<MoveHistory>,
     mut redo: ResMut<RedoStack>,
     pointer: Res<PointerState>,
+    size: Res<CubeSize>,
     mut egui_ctx: EguiContexts,
 ) {
     // Nu captura taste daca egui are focus
@@ -726,20 +796,27 @@ fn keyboard_input(
         return;
     }
 
+    let max = max_coord(size.0);
+    let odd = size.0 % 2 == 1;
     let mappings = [
-        (KeyCode::KeyR, CubeMove::r(),  CubeMove::ri()),
-        (KeyCode::KeyL, CubeMove::l(),  CubeMove::li()),
-        (KeyCode::KeyU, CubeMove::u(),  CubeMove::ui()),
-        (KeyCode::KeyD, CubeMove::d(),  CubeMove::di()),
-        (KeyCode::KeyF, CubeMove::f(),  CubeMove::fi()),
-        (KeyCode::KeyB, CubeMove::b(),  CubeMove::bi()),
-        (KeyCode::KeyM, CubeMove::m(),  CubeMove::mi()),
-        (KeyCode::KeyE, CubeMove::e(),  CubeMove::ei()),
-        (KeyCode::KeyS, CubeMove::s(),  CubeMove::si()),
+        (KeyCode::KeyR, CubeMove::r(max),  CubeMove::ri(max), true),
+        (KeyCode::KeyL, CubeMove::l(max),  CubeMove::li(max), true),
+        (KeyCode::KeyU, CubeMove::u(max),  CubeMove::ui(max), true),
+        (KeyCode::KeyD, CubeMove::d(max),  CubeMove::di(max), true),
+        (KeyCode::KeyF, CubeMove::f(max),  CubeMove::fi(max), true),
+        (KeyCode::KeyB, CubeMove::b(max),  CubeMove::bi(max), true),
+        // Feliile din mijloc exista doar la cuburile impare.
+        (KeyCode::KeyM, CubeMove::m(),  CubeMove::mi(), odd),
+        (KeyCode::KeyE, CubeMove::e(),  CubeMove::ei(), odd),
+        (KeyCode::KeyS, CubeMove::s(),  CubeMove::si(), odd),
+        // Rotatii de cub intreg.
+        (KeyCode::KeyX, CubeMove::x(),  CubeMove::xi(), true),
+        (KeyCode::KeyY, CubeMove::y(),  CubeMove::yi(), true),
+        (KeyCode::KeyZ, CubeMove::z(),  CubeMove::zi(), true),
     ];
 
-    for (key, cw, ccw) in &mappings {
-        if keys.just_pressed(*key) {
+    for (key, cw, ccw, enabled) in &mappings {
+        if *enabled && keys.just_pressed(*key) {
             let mv = if shift { *ccw } else { *cw };
             queue.0.push_back((mv, true));
             redo.0.clear();
@@ -804,7 +881,7 @@ fn process_rotation(
                     state.cube_move.angle,
                 );
                 gp.x = nx; gp.y = ny; gp.z = nz;
-                tf.translation = Vec3::new(nx as f32, ny as f32, nz as f32);
+                tf.translation = Vec3::new(nx as f32, ny as f32, nz as f32) * 0.5;
                 tf.rotation    = snap_rotation(tf.rotation);
             }
         }
@@ -821,7 +898,7 @@ fn process_rotation(
             let mut initial_transforms = Vec::new();
             for (entity, gp, tf) in cubie_query.iter() {
                 let layer_val = match mv.layer_axis { 0 => gp.x, 1 => gp.y, _ => gp.z };
-                if layer_val == mv.layer_value {
+                if mv.affects(layer_val) {
                     entities.push(entity);
                     initial_transforms.push(*tf);
                 }
@@ -853,24 +930,41 @@ impl Rng {
     fn range(&mut self, n: usize) -> usize { (self.next() as usize) % n }
 }
 
-/// Scramble aleator din mutari de fete, fara acelasi strat de doua ori la
-/// rand (mutarile consecutive pe acelasi strat se anuleaza sau se combina).
-fn generate_scramble(seed: u64, count: usize) -> Vec<CubeMove> {
+/// Scramble aleator pe orice strat al cubului n x n, fara acelasi strat de
+/// doua ori la rand (mutarile consecutive pe acelasi strat se anuleaza sau se
+/// combina). Pentru cuburile pare stratul 0 nu exista.
+fn generate_scramble(seed: u64, count: usize, n: i32) -> Vec<CubeMove> {
+    let max = max_coord(n);
     let mut rng = Rng::new(seed);
-    let moves = [
-        CubeMove::r(), CubeMove::ri(), CubeMove::l(), CubeMove::li(),
-        CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
-        CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
-    ];
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    let layers: Vec<i32> = (-max..=max).step_by(2).collect();
+
     let mut out = Vec::with_capacity(count);
     let mut last_layer: Option<(u8, i32)> = None;
     while out.len() < count {
-        let mv = moves[rng.range(12)];
-        if last_layer == Some((mv.layer_axis, mv.layer_value)) { continue; }
-        last_layer = Some((mv.layer_axis, mv.layer_value));
-        out.push(mv);
+        let axis_idx = rng.range(3);
+        let layer = layers[rng.range(layers.len())];
+        if last_layer == Some((axis_idx as u8, layer)) { continue; }
+        last_layer = Some((axis_idx as u8, layer));
+        let angle = if rng.range(2) == 0 { FRAC_PI_2 } else { -FRAC_PI_2 };
+        out.push(CubeMove {
+            rotation_axis: axes[axis_idx],
+            layer_axis: axis_idx as u8,
+            layer_value: layer,
+            angle,
+        });
     }
     out
+}
+
+/// Lungimea de scramble potrivita marimii cubului.
+fn scramble_len(n: i32) -> usize {
+    match n {
+        2 => 10,
+        3 => 20,
+        4 => 35,
+        _ => 50,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -881,10 +975,34 @@ fn egui_ui(
     mut redo: ResMut<RedoStack>,
     mut stats: ResMut<GameStats>,
     mut solver_ctx: ResMut<SolverContext>,
+    mut size: ResMut<CubeSize>,
     pointer: Res<PointerState>,
     time: Res<Time>,
 ) {
     let ctx = contexts.ctx_mut();
+
+    // Selector de marime — sus-dreapta, discret.
+    egui::Area::new("size_select".into())
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                for n in 2..=5 {
+                    let selected = size.0 == n;
+                    let label = egui::RichText::new(format!("{n}×{n}"))
+                        .size(13.0)
+                        .color(if selected {
+                            egui::Color32::WHITE
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(200, 200, 220, 130)
+                        });
+                    if ui.add_sized(egui::vec2(44.0, 30.0), egui::SelectableLabel::new(selected, label)).clicked()
+                        && !selected
+                    {
+                        size.0 = n;
+                    }
+                }
+            });
+        });
 
     // Layout compact pe ecrane inguste (telefoane): butoane mari, jos, si
     // hint-uri de gesturi in loc de taste.
@@ -909,7 +1027,7 @@ fn egui_ui(
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Fete: R L U D F B  |  Felii: M E S  |  Shift = prime  |  Ctrl+Z = undo, Ctrl+Shift+Z = redo\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
+                        "Fete: R L U D F B  |  Felii: M E S  |  Cub intreg: x y z  |  Shift = prime  |  Ctrl+Z / Ctrl+Shift+Z = undo / redo\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
                     )
                     .size(12.0)
                     .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120))
@@ -984,7 +1102,8 @@ fn egui_ui(
     let settled = queue.0.is_empty() && pointer.manual.is_none();
     let can_undo = settled && !history.0.is_empty();
     let can_redo = settled && !redo.0.is_empty();
-    let can_solve = settled && !solver_ctx.pending;
+    // Algoritmul Kociemba exista doar pentru 3x3.
+    let can_solve = settled && !solver_ctx.pending && size.0 == 3;
     let can_rewind = settled && !history.0.is_empty();
 
     let mut do_scramble = false;
@@ -1041,7 +1160,7 @@ fn egui_ui(
         stats.phase = Phase::Scrambling;
         stats.moves = 0;
         let seed = (time.elapsed_seconds() * 100_000.0) as u64;
-        for mv in generate_scramble(seed, 20) {
+        for mv in generate_scramble(seed, scramble_len(size.0), size.0) {
             queue.0.push_back((mv, true));
         }
     }
@@ -1098,6 +1217,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    size: Res<CubeSize>,
 ) {
     commands.spawn(Camera3dBundle {
         transform: Transform::from_xyz(4.5, 3.4, 8.2).looking_at(Vec3::ZERO, Vec3::Y),
@@ -1119,6 +1239,19 @@ fn setup(
         ..default()
     });
 
+    spawn_cube(&mut commands, &mut meshes, &mut materials, size.0);
+}
+
+/// Construieste cubul n x n: doar cubie-urile de la suprafata, in coordonate
+/// dublate (pas 2), cu stickere pe fetele exterioare.
+fn spawn_cube(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    n: i32,
+) {
+    let max = max_coord(n);
+
     let cubie_mesh   = meshes.add(Cuboid::new(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE));
     let sticker_mesh = meshes.add(Rectangle::new(STICKER_SIZE, STICKER_SIZE));
     let black_mat    = materials.add(StandardMaterial {
@@ -1126,6 +1259,16 @@ fn setup(
         perceptual_roughness: 0.9,
         ..default()
     });
+    let sticker_mats: Vec<_> = (0..6)
+        .map(|i| {
+            materials.add(StandardMaterial {
+                base_color: face_color(i),
+                perceptual_roughness: 0.4,
+                double_sided: true,
+                ..default()
+            })
+        })
+        .collect();
 
     let face_defs = [
         ( 1_i32, 0_usize, Vec3::new(0.0,  FACE_OFFSET, 0.0), Quat::from_rotation_x(-FRAC_PI_2)),
@@ -1136,16 +1279,17 @@ fn setup(
         (-1_i32, 5_usize, Vec3::new(0.0, 0.0, -FACE_OFFSET), Quat::from_rotation_y(PI)),
     ];
 
-    for x in -1_i32..=1 {
-        for y in -1_i32..=1 {
-            for z in -1_i32..=1 {
-                if x == 0 && y == 0 && z == 0 { continue; }
+    for x in (-max..=max).step_by(2) {
+        for y in (-max..=max).step_by(2) {
+            for z in (-max..=max).step_by(2) {
+                // Interiorul nu se vede niciodata.
+                if x.abs() != max && y.abs() != max && z.abs() != max { continue; }
 
                 let cubie_id = commands.spawn((
                     PbrBundle {
                         mesh: cubie_mesh.clone(),
                         material: black_mat.clone(),
-                        transform: Transform::from_xyz(x as f32, y as f32, z as f32),
+                        transform: Transform::from_translation(Vec3::new(x as f32, y as f32, z as f32) * 0.5),
                         ..default()
                     },
                     GridPos { x, y, z },
@@ -1153,16 +1297,10 @@ fn setup(
 
                 let axes = [y, y, x, x, z, z];
                 for (i, &(sign, face_idx, offset, rotation)) in face_defs.iter().enumerate() {
-                    if axes[i] != sign { continue; }
-                    let sticker_mat = materials.add(StandardMaterial {
-                        base_color: face_color(face_idx),
-                        perceptual_roughness: 0.4,
-                        double_sided: true,
-                        ..default()
-                    });
+                    if axes[i] != sign * max { continue; }
                     commands.spawn(PbrBundle {
                         mesh: sticker_mesh.clone(),
-                        material: sticker_mat,
+                        material: sticker_mats[face_idx].clone(),
                         transform: Transform { translation: offset, rotation, ..default() },
                         ..default()
                     }).set_parent(cubie_id);
@@ -1170,6 +1308,45 @@ fn setup(
             }
         }
     }
+}
+
+/// La schimbarea marimii din UI: reconstruieste scena si reseteaza sesiunea.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_cube(
+    size: Res<CubeSize>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    cubies: Query<Entity, With<GridPos>>,
+    mut queue: ResMut<MoveQueue>,
+    mut history: ResMut<MoveHistory>,
+    mut redo: ResMut<RedoStack>,
+    mut stats: ResMut<GameStats>,
+    mut solver_ctx: ResMut<SolverContext>,
+    mut active: ResMut<ActiveRotation>,
+    mut pointer: ResMut<PointerState>,
+    mut cam: ResMut<OrbitCamera>,
+) {
+    if !size.is_changed() || size.is_added() { return; }
+
+    for entity in &cubies {
+        commands.entity(entity).despawn_recursive();
+    }
+    spawn_cube(&mut commands, &mut meshes, &mut materials, size.0);
+
+    queue.0.clear();
+    history.0.clear();
+    redo.0.clear();
+    active.0 = None;
+    pointer.manual = None;
+    pointer.drag = None;
+    solver_ctx.pending = false;
+    *stats = GameStats {
+        best_time: storage_get(&store_best_key(size.0)).and_then(|s| s.parse().ok()),
+        ..default()
+    };
+    cam.radius = camera_radius(size.0);
+    storage_set(STORE_SIZE, &size.0.to_string());
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1180,19 +1357,23 @@ mod tests {
 
     fn all_basic_moves() -> Vec<CubeMove> {
         vec![
-            CubeMove::r(), CubeMove::ri(), CubeMove::l(), CubeMove::li(),
-            CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
-            CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
+            CubeMove::r(2), CubeMove::ri(2), CubeMove::l(2), CubeMove::li(2),
+            CubeMove::u(2), CubeMove::ui(2), CubeMove::d(2), CubeMove::di(2),
+            CubeMove::f(2), CubeMove::fi(2), CubeMove::b(2), CubeMove::bi(2),
             CubeMove::m(), CubeMove::mi(), CubeMove::e(), CubeMove::ei(),
             CubeMove::s(), CubeMove::si(),
+            CubeMove::x(), CubeMove::xi(), CubeMove::y(), CubeMove::yi(),
+            CubeMove::z(), CubeMove::zi(),
         ]
     }
 
     #[test]
     fn move_codec_roundtrip() {
         let mut moves = all_basic_moves();
-        // si mutari duble (±180°), cum produce drag-ul manual
-        moves.push(CubeMove { rotation_axis: Vec3::X, layer_axis: 0, layer_value: 1, angle: PI });
+        // straturi interioare de 5x5 si mutari duble (±180°), cum produce
+        // drag-ul manual
+        moves.push(CubeMove { rotation_axis: Vec3::X, layer_axis: 0, layer_value: -4, angle: PI });
+        moves.push(CubeMove { rotation_axis: Vec3::X, layer_axis: 0, layer_value: 3, angle: PI });
         moves.push(CubeMove { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: 0, angle: -PI });
 
         let decoded = decode_moves(&encode_moves(&moves)).expect("decode failed");
@@ -1209,8 +1390,7 @@ mod tests {
     fn decode_rejects_garbage() {
         assert!(decode_moves("12").is_none(), "lungime gresita");
         assert!(decode_moves("912").is_none(), "axa invalida");
-        assert!(decode_moves("092").is_none(), "strat invalid");
-        assert!(decode_moves("012").is_none(), "zero sferturi de tura");
+        assert!(decode_moves("092").is_none(), "zero sferturi de tura");
         assert!(decode_moves("abc").is_none(), "non-cifre");
         assert!(decode_moves("").map(|v| v.is_empty()).unwrap_or(false), "sirul gol e istoric gol");
     }
@@ -1218,11 +1398,11 @@ mod tests {
     #[test]
     fn four_quarter_turns_are_identity() {
         for mv in all_basic_moves() {
-            let mut pos = (1, 1, 1);
+            let mut pos = (2, 2, 2);
             for _ in 0..4 {
                 pos = rotate_grid_pos(pos.0, pos.1, pos.2, mv.rotation_axis, mv.angle);
             }
-            assert_eq!(pos, (1, 1, 1), "mutarea {mv:?} nu are ordin 4");
+            assert_eq!(pos, (2, 2, 2), "mutarea {mv:?} nu are ordin 4");
         }
     }
 
@@ -1230,7 +1410,7 @@ mod tests {
     fn move_then_inverse_is_identity() {
         for mv in all_basic_moves() {
             let inv = mv.inverse();
-            for start in [(1, 1, 1), (1, 0, -1), (0, 1, -1), (-1, -1, -1)] {
+            for start in [(2, 2, 2), (2, 0, -2), (0, 2, -2), (-2, -2, -2), (3, -1, 1)] {
                 let p = rotate_grid_pos(start.0, start.1, start.2, mv.rotation_axis, mv.angle);
                 let back = rotate_grid_pos(p.0, p.1, p.2, inv.rotation_axis, inv.angle);
                 assert_eq!(back, start, "inversul mutarii {mv:?} nu anuleaza");
@@ -1240,14 +1420,24 @@ mod tests {
 
     #[test]
     fn scramble_never_repeats_layer() {
-        for seed in [1_u64, 42, 0xDEAD, 987654321] {
-            let s = generate_scramble(seed, 20);
-            assert_eq!(s.len(), 20);
-            for w in s.windows(2) {
-                assert!(
-                    (w[0].layer_axis, w[0].layer_value) != (w[1].layer_axis, w[1].layer_value),
-                    "strat repetat consecutiv la seed {seed}"
-                );
+        for n in 2..=5 {
+            let max = max_coord(n);
+            for seed in [1_u64, 42, 0xDEAD, 987654321] {
+                let s = generate_scramble(seed, scramble_len(n), n);
+                assert_eq!(s.len(), scramble_len(n));
+                for mv in &s {
+                    assert!(mv.layer_value.abs() <= max, "{n}x{n}: strat inexistent");
+                    assert_eq!(
+                        (mv.layer_value - max).rem_euclid(2), 0,
+                        "{n}x{n}: paritate gresita a stratului"
+                    );
+                }
+                for w in s.windows(2) {
+                    assert!(
+                        (w[0].layer_axis, w[0].layer_value) != (w[1].layer_axis, w[1].layer_value),
+                        "strat repetat consecutiv la seed {seed}"
+                    );
+                }
             }
         }
     }

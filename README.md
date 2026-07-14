@@ -10,13 +10,14 @@ Works on desktop (mouse + keyboard) and mobile (touch-first controls), installs 
 
 ## Features
 
+- **2×2 to 5×5 cubes** — one integer-lattice move engine drives every size; the grid uses doubled coordinates so even cubes (no middle layer) stay exact.
 - **Live layer dragging** — grab any sticker and the layer follows your finger in real time, snapping to the nearest 90° on release. Drag outside the cube to orbit the camera; pinch to zoom.
-- **Kociemba two-phase solver** — the ✨ SOLVE button computes a ~20-move solution from *any* reachable state (via [kewb](https://crates.io/crates/kewb)) and plays it back move by move.
-- **Rewind** — alternatively, watch the cube retrace your entire move history in reverse.
-- **Speedcubing timer** — arms after a scramble, starts on your first move, stops on solve detection, and tracks your personal best.
+- **Kociemba two-phase solver** (3×3) — the ✨ SOLVE button computes a ~20-move solution from *any* reachable state (via [kewb](https://crates.io/crates/kewb)) and plays it back move by move.
+- **Rewind** — alternatively, watch the cube retrace your entire move history in reverse (any size).
+- **Speedcubing timer** — arms after a scramble, starts on your first move, stops on solve detection, and tracks a personal best per cube size.
 - **Undo / redo** — buttons or `Ctrl+Z` / `Ctrl+Shift+Z`.
-- **Full persistence** — cube state, history and records survive page reloads (localStorage).
-- **Keyboard notation** — `R L U D F B` faces, `M E S` slices, `Shift` for prime moves.
+- **Full persistence** — cube size, state, history and records survive page reloads (localStorage).
+- **Keyboard notation** — `R L U D F B` faces, `M E S` slices, `x y z` whole-cube rotations, `Shift` for prime moves.
 
 ## Engineering highlights
 
@@ -51,7 +52,9 @@ All of the above is covered by native unit tests (`cargo test`), including scram
 | Drag on background | Orbit camera |
 | Scroll / pinch | Zoom |
 | `R L U D F B` / `M E S` | Face / slice moves (`Shift` = counter-clockwise) |
+| `x y z` | Whole-cube rotations (`Shift` = counter-clockwise) |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
+| 2×2 … 5×5 selector | Switch cube size (top-right) |
 
 ## Development
 

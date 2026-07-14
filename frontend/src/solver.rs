@@ -99,12 +99,35 @@ pub fn scene_to_facelets(cubies: &[(IVec3, Quat)]) -> Option<String> {
     Some(out)
 }
 
-/// Cub rezolvat = fiecare fata uniforma. Spre deosebire de compararea
-/// orientarilor, definitia asta ignora rasucirea (invizibila) a centrelor.
-pub fn is_solved(cubies: &[(IVec3, Quat)]) -> bool {
-    scene_to_facelets(cubies).is_some_and(|s| {
-        s.as_bytes().chunks(9).all(|face| face.iter().all(|&b| b == face[0]))
-    })
+/// Cub rezolvat = fiecare fata uniforma, pentru orice marime n x n.
+/// `max_c` e coordonata dublata a stratului exterior (n - 1). Spre deosebire
+/// de compararea orientarilor, definitia asta ignora rasucirea (invizibila)
+/// a centrelor.
+pub fn is_solved(cubies: &[(IVec3, Quat)], max_c: i32) -> bool {
+    // Culoarea vazuta pe fiecare directie de fata; None = inca nevazuta.
+    let mut seen: [Option<usize>; 6] = [None; 6];
+    for &(pos, q) in cubies {
+        let home = (q.conjugate() * pos.as_vec3()).round().as_ivec3();
+        for axis in 0..3 {
+            if home[axis].abs() != max_c {
+                continue;
+            }
+            let sign = home[axis].signum();
+            let mut home_normal = Vec3::ZERO;
+            home_normal[axis] = sign as f32;
+            let world_dir = (q * home_normal).round().as_ivec3();
+            let Some(face) = FACE_DIRS.iter().position(|d| *d == world_dir) else {
+                return false;
+            };
+            let color = home_color(axis, sign);
+            match seen[face] {
+                None => seen[face] = Some(color),
+                Some(c) if c == color => {}
+                Some(_) => return false,
+            }
+        }
+    }
+    true
 }
 
 /// Traduce o mutare kewb (litera de fata) intr-o mutare pe axe world.
@@ -131,7 +154,9 @@ fn to_cube_move(m: KewbMove) -> CubeMove {
     CubeMove {
         rotation_axis: axes[axis_idx],
         layer_axis: axis_idx as u8,
-        layer_value: dir[axis_idx],
+        // Grila aplicatiei e in coordonate dublate: stratul exterior al
+        // cubului 3x3 e la ±2.
+        layer_value: dir[axis_idx] * 2,
         angle,
     }
 }
@@ -154,16 +179,18 @@ pub fn solve_scene(table: &DataTable, cubies: &[(IVec3, Quat)]) -> Option<Vec<Cu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rotate_grid_pos;
+    use crate::{max_coord, rotate_grid_pos};
     use std::sync::OnceLock;
 
-    /// Scena rezolvata: 26 de cubie-uri cu orientare identitate.
-    fn solved_scene() -> Vec<(IVec3, Quat)> {
+    /// Scena rezolvata a cubului n x n, in coordonate dublate (ca in app):
+    /// doar cubie-urile de la suprafata, orientare identitate.
+    fn solved_scene(n: i32) -> Vec<(IVec3, Quat)> {
+        let max = max_coord(n);
         let mut v = Vec::new();
-        for x in -1..=1 {
-            for y in -1..=1 {
-                for z in -1..=1 {
-                    if x == 0 && y == 0 && z == 0 {
+        for x in (-max..=max).step_by(2) {
+            for y in (-max..=max).step_by(2) {
+                for z in (-max..=max).step_by(2) {
+                    if x.abs() != max && y.abs() != max && z.abs() != max {
                         continue;
                     }
                     v.push((IVec3::new(x, y, z), Quat::IDENTITY));
@@ -183,13 +210,18 @@ mod tests {
                 1 => pos.y,
                 _ => pos.z,
             };
-            if layer_val != mv.layer_value {
+            if !mv.affects(layer_val) {
                 continue;
             }
             let (nx, ny, nz) = rotate_grid_pos(pos.x, pos.y, pos.z, mv.rotation_axis, mv.angle);
             *pos = IVec3::new(nx, ny, nz);
             *rot = (q * *rot).normalize();
         }
+    }
+
+    /// Din coordonate dublate 3x3 (±2) in unitatile solver-ului (±1).
+    fn halved(scene: &[(IVec3, Quat)]) -> Vec<(IVec3, Quat)> {
+        scene.iter().map(|&(p, q)| (p / 2, q)).collect()
     }
 
     fn shared_table() -> &'static DataTable {
@@ -199,22 +231,22 @@ mod tests {
 
     #[test]
     fn solved_scene_produces_canonical_facelets() {
-        let s = scene_to_facelets(&solved_scene()).unwrap();
+        let s = scene_to_facelets(&halved(&solved_scene(3))).unwrap();
         assert_eq!(s, "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB");
-        assert!(is_solved(&solved_scene()));
+        assert!(is_solved(&solved_scene(3), 2));
     }
 
     #[test]
     fn single_move_is_not_solved_and_solver_undoes_it() {
-        let mut scene = solved_scene();
-        apply_move_sim(&mut scene, &CubeMove::r());
-        assert!(!is_solved(&scene));
+        let mut scene = solved_scene(3);
+        apply_move_sim(&mut scene, &CubeMove::r(2));
+        assert!(!is_solved(&scene, 2));
 
-        let moves = solve_scene(shared_table(), &scene).unwrap();
+        let moves = solve_scene(shared_table(), &halved(&scene)).unwrap();
         for mv in &moves {
             apply_move_sim(&mut scene, mv);
         }
-        assert!(is_solved(&scene));
+        assert!(is_solved(&scene, 2));
     }
 
     #[test]
@@ -222,40 +254,75 @@ mod tests {
         // U U U U readuce piesele, dar centrul U ramane cu orientare -360°
         // (echivalenta); si mutari care rasucesc doar centre trebuie sa
         // ramana "rezolvat".
-        let mut scene = solved_scene();
+        let mut scene = solved_scene(3);
         for _ in 0..4 {
-            apply_move_sim(&mut scene, &CubeMove::u());
+            apply_move_sim(&mut scene, &CubeMove::u(2));
         }
-        assert!(is_solved(&scene));
+        assert!(is_solved(&scene, 2));
+    }
+
+    #[test]
+    fn whole_cube_rotation_keeps_solved() {
+        let mut scene = solved_scene(3);
+        apply_move_sim(&mut scene, &CubeMove::x());
+        apply_move_sim(&mut scene, &CubeMove::y());
+        assert!(is_solved(&scene, 2));
+        // ...iar dupa o rotatie de cub intreg, o mutare de fata tot strica.
+        apply_move_sim(&mut scene, &CubeMove::r(2));
+        assert!(!is_solved(&scene, 2));
     }
 
     #[test]
     fn slice_moves_are_handled_via_centers() {
         // M muta centrele: starea ramane rezolvabila si detectabila.
-        let mut scene = solved_scene();
+        let mut scene = solved_scene(3);
         apply_move_sim(&mut scene, &CubeMove::m());
-        assert!(!is_solved(&scene));
-        let moves = solve_scene(shared_table(), &scene).unwrap();
+        assert!(!is_solved(&scene, 2));
+        let moves = solve_scene(shared_table(), &halved(&scene)).unwrap();
         for mv in &moves {
             apply_move_sim(&mut scene, mv);
         }
-        assert!(is_solved(&scene));
+        assert!(is_solved(&scene, 2));
+    }
+
+    #[test]
+    fn nxn_solved_detection() {
+        for n in [2, 4, 5] {
+            let max = max_coord(n);
+            let mut scene = solved_scene(n);
+            assert!(is_solved(&scene, max), "cubul {n}x{n} rezolvat nedetectat");
+
+            apply_move_sim(&mut scene, &CubeMove::r(max));
+            assert!(!is_solved(&scene, max), "{n}x{n}: R nedetectat ca nerezolvat");
+            for _ in 0..3 {
+                apply_move_sim(&mut scene, &CubeMove::r(max));
+            }
+            assert!(is_solved(&scene, max), "{n}x{n}: R de 4 ori nu e identitate");
+
+            // Strat interior (exista de la 4x4 in sus).
+            if n >= 4 {
+                let inner = CubeMove { layer_value: max - 2, ..CubeMove::r(max) };
+                apply_move_sim(&mut scene, &inner);
+                assert!(!is_solved(&scene, max), "{n}x{n}: strat interior nedetectat");
+            }
+        }
     }
 
     #[test]
     fn random_states_roundtrip_through_solver() {
         // Testul-cheie: secvente aleatoare din TOATE mutarile noastre
-        // (fete, felii, prime) → solver → aplicare → rezolvat.
+        // (fete, felii, prime, cub intreg) → solver → aplicare → rezolvat.
         let all_moves = [
-            CubeMove::r(), CubeMove::ri(), CubeMove::l(), CubeMove::li(),
-            CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
-            CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
+            CubeMove::r(2), CubeMove::ri(2), CubeMove::l(2), CubeMove::li(2),
+            CubeMove::u(2), CubeMove::ui(2), CubeMove::d(2), CubeMove::di(2),
+            CubeMove::f(2), CubeMove::fi(2), CubeMove::b(2), CubeMove::bi(2),
             CubeMove::m(), CubeMove::mi(), CubeMove::e(), CubeMove::ei(),
             CubeMove::s(), CubeMove::si(),
+            CubeMove::x(), CubeMove::y(), CubeMove::z(),
         ];
         let mut seed = 0xC0FFEE_u64;
         for round in 0..5 {
-            let mut scene = solved_scene();
+            let mut scene = solved_scene(3);
             for _ in 0..30 {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
@@ -263,13 +330,13 @@ mod tests {
                 let mv = all_moves[(seed as usize) % all_moves.len()];
                 apply_move_sim(&mut scene, &mv);
             }
-            let moves = solve_scene(shared_table(), &scene)
+            let moves = solve_scene(shared_table(), &halved(&scene))
                 .unwrap_or_else(|| panic!("solver failed at round {round}"));
             assert!(moves.len() <= 23, "solution too long: {}", moves.len());
             for mv in &moves {
                 apply_move_sim(&mut scene, mv);
             }
-            assert!(is_solved(&scene), "not solved at round {round}");
+            assert!(is_solved(&scene, 2), "not solved at round {round}");
         }
     }
 }

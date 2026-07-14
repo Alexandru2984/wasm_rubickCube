@@ -27,6 +27,8 @@ kewb = "0.4.3"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # localStorage pentru persistenta starii cubului si a recordului.
 web-sys = { version = "0.3", features = ["Window", "Storage"] }
+# Panicurile ajung in consola browserului cu stack trace lizibil.
+console_error_panic_hook = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Pe nativ (cargo test) winit are nevoie de un backend de fereastra.
