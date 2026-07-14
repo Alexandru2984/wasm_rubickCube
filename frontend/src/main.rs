@@ -635,16 +635,14 @@ fn update_game_phase(
 
     match stats.phase {
         Phase::Scrambling => stats.phase = Phase::Ready,
-        Phase::Running => {
-            if solver::is_solved(&collect_cubies(&cubies)) {
-                let t = time.elapsed_seconds_f64() - stats.start_time;
-                let is_best = stats.best_time.is_none_or(|b| t < b);
-                if is_best {
-                    stats.best_time = Some(t);
-                    storage_set(STORE_BEST, &format!("{t}"));
-                }
-                stats.phase = Phase::Solved { time: t, is_best };
+        Phase::Running if solver::is_solved(&collect_cubies(&cubies)) => {
+            let t = time.elapsed_seconds_f64() - stats.start_time;
+            let is_best = stats.best_time.is_none_or(|b| t < b);
+            if is_best {
+                stats.best_time = Some(t);
+                storage_set(STORE_BEST, &format!("{t}"));
             }
+            stats.phase = Phase::Solved { time: t, is_best };
         }
         _ => {}
     }
