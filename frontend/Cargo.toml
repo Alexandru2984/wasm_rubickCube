@@ -4,12 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = { version = "0.14", features = ["webgl2"] }
+# Doar ce foloseste aplicatia: fereastra + PBR + pipeline WebGL2.
+# Setul default de features (audio, glTF, animation, scene, UI, text, gizmos,
+# png...) umfla binarul WASM fara niciun beneficiu aici.
+bevy = { version = "0.14", default-features = false, features = [
+    "bevy_winit",
+    "bevy_asset",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "webgl2",
+    "tonemapping_luts",
+    "ktx2",
+    "zstd",
+] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 uuid = { version = "1.22.0", features = ["js"] }
 bevy_egui = { version = "0.28", default-features = false, features = ["render", "default_fonts"] }
+
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = true
 codegen-units = 1
 

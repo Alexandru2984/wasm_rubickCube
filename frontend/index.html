@@ -1,9 +1,21 @@
 <!DOCTYPE html>
-<html>
+<html lang="ro">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="description" content="Cub Rubik 3D interactiv, direct în browser — Rust + Bevy + WebAssembly." />
+    <meta name="theme-color" content="#1a1a2e" />
     <title>Rubik's Cube</title>
+
+    <link data-trunk rel="copy-file" href="assets/favicon.svg" />
+    <link data-trunk rel="copy-file" href="assets/icon-512.png" />
+    <link data-trunk rel="copy-file" href="assets/icon-180.png" />
+    <link data-trunk rel="copy-file" href="assets/manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="assets/sw.js" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-180.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body {
@@ -19,14 +31,83 @@
         display: block;
         width: 100vw;
         height: 100vh;
+        height: 100dvh; /* pe mobil, 100vh depaseste viewportul real */
         touch-action: none;
         -webkit-tap-highlight-color: transparent;
       }
+
+      /* ── Ecran de incarcare ── */
+      #loader {
+        position: fixed;
+        inset: 0;
+        background: #1a1a2e;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        z-index: 10;
+        transition: opacity 0.45s ease;
+        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      #loader.done { opacity: 0; pointer-events: none; }
+      .ldr-cube {
+        display: grid;
+        grid-template-columns: repeat(3, 22px);
+        gap: 4px;
+        background: #17181f;
+        padding: 7px;
+        border-radius: 9px;
+        animation: ldr-spin 2.4s ease-in-out infinite;
+      }
+      .ldr-cube i { width: 22px; height: 22px; border-radius: 4px; display: block; }
+      @keyframes ldr-spin {
+        0%, 20%   { transform: rotate(0deg); }
+        45%, 70%  { transform: rotate(90deg); }
+        95%, 100% { transform: rotate(180deg); }
+      }
+      @media (prefers-reduced-motion: reduce) { .ldr-cube { animation: none; } }
+      #ldr-label { color: #9aa0c0; font-size: 14px; }
+      .ldr-track {
+        width: min(260px, 60vw);
+        height: 6px;
+        border-radius: 3px;
+        background: #26283e;
+        overflow: hidden;
+      }
+      #ldr-bar {
+        width: 0%;
+        height: 100%;
+        border-radius: 3px;
+        background: linear-gradient(90deg, #0045ad, #008c38, #ffd600, #ff5900, #b81205);
+        transition: width 0.2s ease;
+      }
     </style>
-      <script defer src="https://analytics.micutu.com/script.js" data-website-id="ba3c0e81-cd09-43aa-8497-690b000af189"></script>
-</head>
+    <script defer src="https://analytics.micutu.com/script.js" data-website-id="ba3c0e81-cd09-43aa-8497-690b000af189"></script>
+  </head>
   <body>
+    <div id="loader">
+      <div class="ldr-cube" aria-hidden="true">
+        <i style="background:#008c38"></i><i style="background:#ffd600"></i><i style="background:#b81205"></i>
+        <i style="background:#ffffff"></i><i style="background:#0045ad"></i><i style="background:#ff5900"></i>
+        <i style="background:#0045ad"></i><i style="background:#b81205"></i><i style="background:#ffffff"></i>
+      </div>
+      <div class="ldr-track"><div id="ldr-bar"></div></div>
+      <div id="ldr-label">Se încarcă…</div>
+    </div>
+
     <canvas id="bevy"></canvas>
-    <link data-trunk rel="rust" data-wasm-opt="z" />
+    <link data-trunk rel="rust" data-wasm-opt="z" data-initializer="assets/initializer.mjs" />
+
+    <script>
+      // Fara WebGL2 nu avem ce porni — mai bine un mesaj decat un ecran mort.
+      if (!document.createElement('canvas').getContext('webgl2')) {
+        var label = document.getElementById('ldr-label');
+        if (label) label.textContent = 'Browserul tău nu suportă WebGL2, necesar pentru cub.';
+      }
+      if ('serviceWorker' in navigator) {
+        addEventListener('load', function () { navigator.serviceWorker.register('/sw.js'); });
+      }
+    </script>
   </body>
 </html>
