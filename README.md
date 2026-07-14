@@ -1,48 +1,77 @@
-# 🧊 3D Rubik's Cube (Rust + Bevy + WebAssembly)
+# 🧊 Rubik's Cube — Rust + Bevy + WebAssembly
 
-A fully functional, interactive 3D Rubik's Cube built from scratch using [Rust](https://www.rust-lang.org/) and the [Bevy Engine](https://bevyengine.org/). The project is compiled to WebAssembly (WASM) to run natively and smoothly directly in the browser.
+[![CI](https://github.com/Alexandru2984/wasm_rubickCube/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexandru2984/wasm_rubickCube/actions/workflows/ci.yml)
 
-## ✨ Features
+An interactive 3D Rubik's Cube that runs entirely in the browser — no backend, no frameworks on the page, just a Bevy game engine scene compiled to WebAssembly.
 
-* **Authentic 3D Rendering:** Renders 26 individual cubies (ignoring the invisible center core for optimization) with physically accurate face spacing.
-* **Advanced Orbit Camera:** Quaternion-based trackball camera implementation. Rotate the cube seamlessly without experiencing gimbal lock or 90-degree constraints.
-* **Smooth Animations:** Moves are queued and animated using a `smoothstep` function for natural acceleration/deceleration.
-* **Mathematical Precision:** Automatic integer snapping (`rotate_grid_pos`) post-animation prevents floating-point drift, ensuring the cube never deforms over time.
-* **Full Control Set:** * Standard moves: `R`, `L`, `U`, `D`, `F`, `B`
-  * Slice moves: `M` (Middle), `E` (Equator), `S` (Standing)
-  * Prime moves (Counter-clockwise): Hold `Shift` + Move Key
-* **Interactive UI:** Built with `bevy_egui`. Includes a randomized `Scramble` generator and an auto-`Solve` function that reverses the move history dynamically.
+**▶ Play it live: [cube.micutu.com](https://cube.micutu.com)**
 
-## 🛠️ Tech Stack
+Works on desktop (mouse + keyboard) and mobile (touch-first controls), installs as a PWA, and keeps working offline after the first visit.
 
-* **Language:** Rust
-* **Game Engine:** Bevy (v0.14)
-* **UI Framework:** `bevy_egui`
-* **Target:** WebAssembly (`wasm32-unknown-unknown`)
-* **Build Tool:** Trunk
+## Features
 
-## 🚀 How to Run (Locally)
+- **Live layer dragging** — grab any sticker and the layer follows your finger in real time, snapping to the nearest 90° on release. Drag outside the cube to orbit the camera; pinch to zoom.
+- **Kociemba two-phase solver** — the ✨ SOLVE button computes a ~20-move solution from *any* reachable state (via [kewb](https://crates.io/crates/kewb)) and plays it back move by move.
+- **Rewind** — alternatively, watch the cube retrace your entire move history in reverse.
+- **Speedcubing timer** — arms after a scramble, starts on your first move, stops on solve detection, and tracks your personal best.
+- **Undo / redo** — buttons or `Ctrl+Z` / `Ctrl+Shift+Z`.
+- **Full persistence** — cube state, history and records survive page reloads (localStorage).
+- **Keyboard notation** — `R L U D F B` faces, `M E S` slices, `Shift` for prime moves.
 
-1. Ensure you have the Rust toolchain installed.
-2. Install the `wasm32-unknown-unknown` target:
-   `rustup target add wasm32-unknown-unknown`
-3. Install [Trunk](https://trunkrs.dev/) (the WASM web application bundler for Rust):
-   `cargo install trunk`
-4. Clone the repository and run the development server:
-   `trunk serve`
-5. Open your browser and navigate to `http://127.0.0.1:8080`.
+## Engineering highlights
 
-## 🎮 Controls
+**25 MB → 11 MB WASM (4.1 MB on the wire).** Bevy's default feature set ships audio, glTF, animation, UI, and text stacks this project never touches. Trimming to `bevy_winit + bevy_pbr + webgl2`, building with full LTO at `opt-level = "z"`, and serving precompressed gzip through nginx `gzip_static` cut first-load size by ~84%. A loading screen with real download progress (Trunk initializer hooks) covers the rest.
 
-### Camera
-* **Left Click + Drag:** Rotate the camera around the cube.
-* **Scroll Wheel:** Zoom in and out.
+**Drag detection with real geometry.** A screen-space ray is cast against the cubies' rotated AABBs; the hit face's normal restricts candidate rotation axes to the two lying in the face plane — the same constraint a physical cube gives your hand. The chosen axis is the one whose screen-projected tangent best matches the drag direction, and the layer angle then tracks the pointer directly (radians per pixel), so the cube feels held rather than clicked.
 
-### Cube Movements
-* **Standard Faces:** `R` (Right), `L` (Left), `U` (Up), `D` (Down), `F` (Front), `B` (Back)
-* **Middle Slices:** `M` (Middle), `E` (Equator), `S` (Standing)
-* **Invert Move:** Hold `Shift` while pressing any of the keys above.
+**State extraction for the solver.** The renderer is the source of truth: each cubie's home position is recovered from its orientation quaternion (`home = q⁻¹ · pos`), stickers are projected to their current world directions, and the 54-facelet string is assembled with face letters assigned from the *current* centers — which is what makes slice moves (they relocate centers) solve correctly. The solution comes back in face letters and is mapped onto world-axis layer rotations.
 
-### UI Panel
-* **Scramble:** Applies 20 random moves to shuffle the cube.
-* **Solve:** Automatically calculates and executes the reverse moves to solve the cube based on the session's history.
+**Solved detection that survives center twists.** Comparing piece orientations naively fails on a real solve: face centers accumulate invisible twists around their own normals. Solved is therefore defined on facelets — every face uniform — which is the physical definition.
+
+**No float drift, ever.** Grid positions are integers; after every animation the orientation quaternion is snapped back to the nearest 90°-multiple rotation matrix. A thousand moves later the cube is still exact, which is also what lets the persistence layer store a whole session as 3 digits per move.
+
+All of the above is covered by native unit tests (`cargo test`), including scramble → solver → apply → solved round-trips over random states with slice moves.
+
+## Tech stack
+
+| | |
+|---|---|
+| Language | Rust |
+| Engine | [Bevy 0.14](https://bevyengine.org/) (trimmed features, WebGL2) |
+| UI overlay | `bevy_egui` |
+| Solver | [kewb](https://crates.io/crates/kewb) (Kociemba two-phase) |
+| Build | [Trunk](https://trunkrs.dev/) → `wasm32-unknown-unknown`, `wasm-opt -Oz` |
+| Hosting | nginx, static files + `gzip_static`, PWA service worker |
+
+## Controls
+
+| Input | Action |
+|---|---|
+| Drag on a sticker | Rotate that layer (follows the pointer, snaps on release) |
+| Drag on background | Orbit camera |
+| Scroll / pinch | Zoom |
+| `R L U D F B` / `M E S` | Face / slice moves (`Shift` = counter-clockwise) |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
+
+## Development
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+
+cd frontend
+trunk serve            # dev server at http://127.0.0.1:8080
+cargo test             # native unit tests (cube algebra, codec, solver round-trips)
+```
+
+`./deploy.sh` builds the release bundle, precompresses it, and copies it to the web root.
+
+## Project layout
+
+```
+frontend/
+  src/main.rs      # scene, input (mouse/touch), move engine, UI, persistence
+  src/solver.rs    # scene → facelets → Kociemba solver → world moves
+  assets/          # PWA manifest, icons, service worker, loading screen
+backend/           # experimental Gleam stub — not deployed
+```
