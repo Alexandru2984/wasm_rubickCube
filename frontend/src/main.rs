@@ -35,14 +35,18 @@ fn main() {
         .insert_resource(PointerState::default())
         .insert_resource(MoveQueue::default())
         .insert_resource(MoveHistory::default())
+        .insert_resource(RedoStack::default())
+        .insert_resource(GameStats::default())
         .insert_resource(ActiveRotation::default())
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, restore_state).chain())
         .add_systems(Update, (
             pointer_input,
             update_camera_transform,
             camera_zoom,
             keyboard_input,
             process_rotation,
+            update_game_phase,
+            persist_state,
             egui_ui,
         ))
         .run();
@@ -107,6 +111,9 @@ fn pointer_input(
     mut cam_state: ResMut<OrbitCamera>,
     mut active_rot: ResMut<ActiveRotation>,
     mut history: ResMut<MoveHistory>,
+    mut redo: ResMut<RedoStack>,
+    mut stats: ResMut<GameStats>,
+    time: Res<Time>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mouse_button: Res<ButtonInput<MouseButton>>,
@@ -118,7 +125,7 @@ fn pointer_input(
     let egui_active = egui_ctx.ctx_mut().is_using_pointer() || egui_ctx.ctx_mut().wants_pointer_input();
 
     if egui_active {
-        finish_manual(&mut pointer, &mut active_rot, &mut history);
+        finish_manual(&mut pointer, &mut active_rot, &mut history, &mut redo, &mut stats, time.elapsed_seconds_f64());
         pointer.drag = None;
         pointer.prev_pinch_distance = None;
         mouse_motion.clear();
@@ -131,7 +138,7 @@ fn pointer_input(
     // 2+ fingers → pinch zoom; rotatia manuala in curs face snap si se incheie.
     let touch_positions: Vec<Vec2> = touches.iter().map(|t| t.position()).collect();
     if touch_positions.len() >= 2 {
-        finish_manual(&mut pointer, &mut active_rot, &mut history);
+        finish_manual(&mut pointer, &mut active_rot, &mut history, &mut redo, &mut stats, time.elapsed_seconds_f64());
         let d = touch_positions[0].distance(touch_positions[1]);
         if let Some(prev) = pointer.prev_pinch_distance {
             cam_state.radius = (cam_state.radius - (d - prev) * 0.03).clamp(3.5, 30.0);
@@ -178,7 +185,7 @@ fn pointer_input(
 
     // Start a new drag: sticker → rotatie de strat, altfel camera.
     if let Some(start_pos) = pressed_now {
-        finish_manual(&mut pointer, &mut active_rot, &mut history);
+        finish_manual(&mut pointer, &mut active_rot, &mut history, &mut redo, &mut stats, time.elapsed_seconds_f64());
         let kind = match raycast_cubie(camera, cam_transform, start_pos, &cubie_q) {
             Some(_) => DragKind::Face,
             None => DragKind::Camera,
@@ -220,7 +227,7 @@ fn pointer_input(
     }
 
     if released {
-        finish_manual(&mut pointer, &mut active_rot, &mut history);
+        finish_manual(&mut pointer, &mut active_rot, &mut history, &mut redo, &mut stats, time.elapsed_seconds_f64());
         pointer.drag = None;
     }
 }
@@ -284,6 +291,9 @@ fn finish_manual(
     pointer: &mut PointerState,
     active_rot: &mut ActiveRotation,
     history: &mut MoveHistory,
+    redo: &mut RedoStack,
+    stats: &mut GameStats,
+    now: f64,
 ) {
     let Some(m) = pointer.manual.take() else { return; };
     let quarter_turns = (m.angle / FRAC_PI_2).round() as i32;
@@ -296,6 +306,8 @@ fn finish_manual(
     };
     if quarter_turns != 0 {
         history.0.push(mv);
+        redo.0.clear();
+        note_recorded_move(stats, now);
     }
     let remaining = (target - m.angle).abs() / FRAC_PI_2;
     active_rot.0 = Some(RotationState {
@@ -432,6 +444,53 @@ pub struct MoveQueue(pub VecDeque<(CubeMove, bool)>);
 #[derive(Resource, Default)]
 pub struct MoveHistory(pub Vec<CubeMove>);
 
+/// Mutari anulate cu Undo, gata de re-executat. Orice mutare noua il goleste.
+#[derive(Resource, Default)]
+pub struct RedoStack(pub Vec<CubeMove>);
+
+// ── Game stats (cronometru + contor) ─────────────────────────────────────────
+
+#[derive(Default, Clone, Copy)]
+enum Phase {
+    /// Joaca libera: fara cronometru.
+    #[default]
+    Idle,
+    /// Scramble-ul se executa; mutarile lui nu se numara.
+    Scrambling,
+    /// Scramble terminat; cronometrul porneste la prima mutare.
+    Ready,
+    Running,
+    Solved { time: f64, is_best: bool },
+}
+
+#[derive(Resource, Default)]
+struct GameStats {
+    phase: Phase,
+    start_time: f64,
+    moves: u32,
+    best_time: Option<f64>,
+}
+
+fn note_recorded_move(stats: &mut GameStats, now: f64) {
+    match stats.phase {
+        Phase::Ready => {
+            stats.phase = Phase::Running;
+            stats.start_time = now;
+            stats.moves = 1;
+        }
+        Phase::Running => stats.moves += 1,
+        _ => {}
+    }
+}
+
+fn fmt_time(t: f64) -> String {
+    if t < 60.0 {
+        format!("{:.2}s", t)
+    } else {
+        format!("{}:{:04.1}", (t / 60.0) as u32, t % 60.0)
+    }
+}
+
 pub struct RotationState {
     pub cube_move: CubeMove,
     pub elapsed: f32,
@@ -445,17 +504,184 @@ pub struct RotationState {
 #[derive(Resource, Default)]
 pub struct ActiveRotation(pub Option<RotationState>);
 
+// ── Persistenta (localStorage) ────────────────────────────────────────────────
+
+const STORE_HISTORY: &str = "cube.history";
+const STORE_REDO: &str = "cube.redo";
+const STORE_BEST: &str = "cube.best";
+
+#[cfg(target_arch = "wasm32")]
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn storage_set(key: &str, value: &str) {
+    if let Some(s) = local_storage() {
+        let _ = s.set_item(key, value);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn storage_get(key: &str) -> Option<String> {
+    local_storage()?.get_item(key).ok().flatten()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn storage_set(_key: &str, _value: &str) {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn storage_get(_key: &str) -> Option<String> {
+    None
+}
+
+/// O mutare = 3 cifre: axa (0-2), stratul (+1 → 0-2), sferturi de tura (+2 → 0-4).
+fn encode_moves(moves: &[CubeMove]) -> String {
+    moves
+        .iter()
+        .map(|m| {
+            let quarters = (m.angle / FRAC_PI_2).round() as i32;
+            format!("{}{}{}", m.layer_axis, m.layer_value + 1, quarters + 2)
+        })
+        .collect()
+}
+
+fn decode_moves(s: &str) -> Option<Vec<CubeMove>> {
+    let bytes = s.as_bytes();
+    if !bytes.len().is_multiple_of(3) {
+        return None;
+    }
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    bytes
+        .chunks(3)
+        .map(|c| {
+            let axis = (c[0] as char).to_digit(10)?;
+            let value = (c[1] as char).to_digit(10)? as i32 - 1;
+            let quarters = (c[2] as char).to_digit(10)? as i32 - 2;
+            if axis > 2 || !(-1..=1).contains(&value) || quarters == 0 || !(-2..=2).contains(&quarters) {
+                return None;
+            }
+            Some(CubeMove {
+                rotation_axis: axes[axis as usize],
+                layer_axis: axis as u8,
+                layer_value: value,
+                angle: quarters as f32 * FRAC_PI_2,
+            })
+        })
+        .collect()
+}
+
+/// La pornire: reconstruieste cubul aplicand instant istoricul salvat, ca un
+/// refresh sa nu piarda nici starea si nici capacitatea Solve-ului de a o desface.
+fn restore_state(
+    mut history: ResMut<MoveHistory>,
+    mut redo: ResMut<RedoStack>,
+    mut stats: ResMut<GameStats>,
+    mut cubies: Query<(&mut GridPos, &mut Transform)>,
+) {
+    stats.best_time = storage_get(STORE_BEST).and_then(|s| s.parse().ok());
+    if let Some(moves) = storage_get(STORE_REDO).and_then(|s| decode_moves(&s)) {
+        redo.0 = moves;
+    }
+    let Some(moves) = storage_get(STORE_HISTORY).and_then(|s| decode_moves(&s)) else {
+        return;
+    };
+    for mv in &moves {
+        let q = Quat::from_axis_angle(mv.rotation_axis, mv.angle);
+        for (mut gp, mut tf) in cubies.iter_mut() {
+            let layer_val = match mv.layer_axis { 0 => gp.x, 1 => gp.y, _ => gp.z };
+            if layer_val != mv.layer_value { continue; }
+            let (nx, ny, nz) = rotate_grid_pos(gp.x, gp.y, gp.z, mv.rotation_axis, mv.angle);
+            gp.x = nx; gp.y = ny; gp.z = nz;
+            tf.translation = Vec3::new(nx as f32, ny as f32, nz as f32);
+            tf.rotation = snap_rotation(q * tf.rotation);
+        }
+    }
+    history.0 = moves;
+}
+
+fn persist_state(history: Res<MoveHistory>, redo: Res<RedoStack>) {
+    if history.is_changed() || redo.is_changed() {
+        storage_set(STORE_HISTORY, &encode_moves(&history.0));
+        storage_set(STORE_REDO, &encode_moves(&redo.0));
+    }
+}
+
+/// Tranzitiile de faza care depind de "cubul s-a asezat": scramble terminat
+/// si detectarea starii rezolvate (toate cubie-urile au aceeasi orientare —
+/// echivalent cu cubul rezolvat, modulo orientarea intregului cub).
+fn update_game_phase(
+    queue: Res<MoveQueue>,
+    active: Res<ActiveRotation>,
+    pointer: Res<PointerState>,
+    mut stats: ResMut<GameStats>,
+    time: Res<Time>,
+    cubies: Query<&Transform, With<GridPos>>,
+) {
+    let settled = queue.0.is_empty() && active.0.is_none() && pointer.manual.is_none();
+    if !settled { return; }
+
+    match stats.phase {
+        Phase::Scrambling => stats.phase = Phase::Ready,
+        Phase::Running => {
+            let mut rotations = cubies.iter().map(|tf| tf.rotation);
+            let Some(first) = rotations.next() else { return; };
+            if rotations.all(|q| q.dot(first).abs() > 0.999) {
+                let t = time.elapsed_seconds_f64() - stats.start_time;
+                let is_best = stats.best_time.is_none_or(|b| t < b);
+                if is_best {
+                    stats.best_time = Some(t);
+                    storage_set(STORE_BEST, &format!("{t}"));
+                }
+                stats.phase = Phase::Solved { time: t, is_best };
+            }
+        }
+        _ => {}
+    }
+}
+
 // ── Keyboard input ────────────────────────────────────────────────────────────
+
+fn undo_move(history: &mut MoveHistory, redo: &mut RedoStack, queue: &mut MoveQueue) {
+    if let Some(mv) = history.0.pop() {
+        redo.0.push(mv);
+        queue.0.push_back((mv.inverse(), false));
+    }
+}
+
+fn redo_move(redo: &mut RedoStack, queue: &mut MoveQueue) {
+    if let Some(mv) = redo.0.pop() {
+        queue.0.push_back((mv, true));
+    }
+}
 
 fn keyboard_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut queue: ResMut<MoveQueue>,
+    mut history: ResMut<MoveHistory>,
+    mut redo: ResMut<RedoStack>,
+    pointer: Res<PointerState>,
     mut egui_ctx: EguiContexts,
 ) {
     // Nu captura taste daca egui are focus
     if egui_ctx.ctx_mut().wants_keyboard_input() { return; }
 
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight)
+        || keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
+
+    if ctrl {
+        // Undo/redo doar cu coada goala: inversarea unei mutari inca neexecutate
+        // ar aplica mutarile in ordinea gresita.
+        if keys.just_pressed(KeyCode::KeyZ) && queue.0.is_empty() && pointer.manual.is_none() {
+            if shift {
+                redo_move(&mut redo, &mut queue);
+            } else {
+                undo_move(&mut history, &mut redo, &mut queue);
+            }
+        }
+        return;
+    }
 
     let mappings = [
         (KeyCode::KeyR, CubeMove::r(),  CubeMove::ri()),
@@ -473,6 +699,7 @@ fn keyboard_input(
         if keys.just_pressed(*key) {
             let mv = if shift { *ccw } else { *cw };
             queue.0.push_back((mv, true));
+            redo.0.clear();
         }
     }
 }
@@ -503,6 +730,7 @@ fn process_rotation(
     mut active: ResMut<ActiveRotation>,
     mut move_queue: ResMut<MoveQueue>,
     mut history: ResMut<MoveHistory>,
+    mut stats: ResMut<GameStats>,
     pointer: Res<PointerState>,
     mut cubie_query: Query<(Entity, &mut GridPos, &mut Transform)>,
     time: Res<Time>,
@@ -542,7 +770,10 @@ fn process_rotation(
         if let Some((mv, record)) = move_queue.0.pop_front() {
             // History reflecta doar mutari executate: push abia la pornirea rotatiei,
             // ca Solve/Scramble apasate in timpul animatiilor sa nu-l corupa.
-            if record { history.0.push(mv); }
+            if record {
+                history.0.push(mv);
+                note_recorded_move(&mut stats, time.elapsed_seconds_f64());
+            }
             let mut entities = Vec::new();
             let mut initial_transforms = Vec::new();
             for (entity, gp, tf) in cubie_query.iter() {
@@ -579,10 +810,14 @@ impl Rng {
     fn range(&mut self, n: usize) -> usize { (self.next() as usize) % n }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn egui_ui(
     mut contexts: EguiContexts,
     mut history: ResMut<MoveHistory>,
     mut queue: ResMut<MoveQueue>,
+    mut redo: ResMut<RedoStack>,
+    mut stats: ResMut<GameStats>,
+    pointer: Res<PointerState>,
     time: Res<Time>,
 ) {
     let ctx = contexts.ctx_mut();
@@ -610,7 +845,7 @@ fn egui_ui(
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Fete: R L U D F B  |  Felii: M E S  |  Shift = prime\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
+                        "Fete: R L U D F B  |  Felii: M E S  |  Shift = prime  |  Ctrl+Z = undo, Ctrl+Shift+Z = redo\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
                     )
                     .size(12.0)
                     .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120))
@@ -618,53 +853,154 @@ fn egui_ui(
             });
     }
 
-    // 2. Panou butoane: jos-centrat pe mobil (tinte de atins mari), sus-stanga pe desktop.
+    // 2. HUD cronometru + contor (centrat sus, sub hint-urile de pe mobil).
+    let hud_text = match stats.phase {
+        Phase::Ready => Some("⏱ cronometrul porneste la prima mutare".to_string()),
+        Phase::Running => Some(format!(
+            "⏱ {}   ·   {} mutari",
+            fmt_time(time.elapsed_seconds_f64() - stats.start_time),
+            stats.moves
+        )),
+        _ => None,
+    };
+    if let Some(text) = hud_text {
+        let hud_y = if compact { 54.0 } else { 12.0 };
+        egui::Area::new("hud".into())
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, hud_y))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(17.0)
+                        .color(egui::Color32::from_rgba_unmultiplied(235, 235, 245, 200)),
+                );
+            });
+    }
+
+    // 3. Celebrare la rezolvare.
+    if let Phase::Solved { time: solve_time, is_best } = stats.phase {
+        egui::Area::new("solved".into())
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -20.0))
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgba_unmultiplied(23, 24, 31, 240))
+                    .rounding(14.0)
+                    .inner_margin(egui::Margin::symmetric(30.0, 24.0))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("🎉 Rezolvat!").size(26.0).strong().color(egui::Color32::WHITE));
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(fmt_time(solve_time)).size(36.0).strong().color(egui::Color32::from_rgb(255, 214, 0)));
+                            ui.label(egui::RichText::new(format!("{} mutari", stats.moves)).size(16.0).color(egui::Color32::from_rgb(180, 184, 210)));
+                            ui.add_space(4.0);
+                            if is_best {
+                                ui.label(egui::RichText::new("★ Record personal nou!").size(15.0).color(egui::Color32::from_rgb(255, 214, 0)));
+                            } else if let Some(best) = stats.best_time {
+                                ui.label(egui::RichText::new(format!("Record personal: {}", fmt_time(best))).size(14.0).color(egui::Color32::from_rgb(150, 255, 180)));
+                            }
+                            ui.add_space(12.0);
+                            if ui.add_sized(egui::vec2(130.0, 42.0), egui::Button::new(egui::RichText::new("OK").size(17.0))).clicked() {
+                                stats.phase = Phase::Idle;
+                            }
+                        });
+                    });
+            });
+    }
+
+    // 4. Panou butoane: jos-centrat pe mobil (tinte de atins mari), sus-stanga pe desktop.
     let (anchor, offset) = if compact {
         (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
     } else {
         (egui::Align2::LEFT_TOP, egui::vec2(12.0, 60.0))
     };
-    let btn_size = if compact { egui::vec2(150.0, 52.0) } else { egui::vec2(130.0, 32.0) };
-    let txt_size = if compact { 18.0 } else { 16.0 };
+    let btn_size = if compact { egui::vec2(150.0, 52.0) } else { egui::vec2(120.0, 32.0) };
+    let small_btn = if compact { egui::vec2(150.0, 44.0) } else { egui::vec2(120.0, 32.0) };
+    let txt_size = if compact { 18.0 } else { 15.0 };
+
+    // Undo/redo sunt valide doar cu coada goala si fara drag manual in curs.
+    let settled = queue.0.is_empty() && pointer.manual.is_none();
+    let can_undo = settled && !history.0.is_empty();
+    let can_redo = settled && !redo.0.is_empty();
+
+    let mut do_scramble = false;
+    let mut do_solve = false;
+    let mut do_undo = false;
+    let mut do_redo = false;
 
     egui::Area::new("controls_area".into())
         .anchor(anchor, offset)
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Buton Scramble
-                if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("🎲 SCRAMBLE").size(txt_size).color(egui::Color32::from_rgb(180, 180, 255)))).clicked() {
-                    queue.0.clear();
-                    let seed = (time.elapsed_seconds() * 100_000.0) as u64;
-                    let mut rng = Rng::new(seed);
-                    let moves = [
-                        CubeMove::r(), CubeMove::ri(), CubeMove::l(), CubeMove::li(),
-                        CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
-                        CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
-                    ];
-                    // Fara aceeasi fata de doua ori la rand (mutarile s-ar anula/combina).
-                    let mut last_layer: Option<(u8, i32)> = None;
-                    let mut count = 0;
-                    while count < 20 {
-                        let mv = moves[rng.range(12)];
-                        if last_layer == Some((mv.layer_axis, mv.layer_value)) { continue; }
-                        last_layer = Some((mv.layer_axis, mv.layer_value));
-                        queue.0.push_back((mv, true));
-                        count += 1;
-                    }
-                }
+            let undo_txt = egui::RichText::new("⏴ UNDO").size(txt_size).color(egui::Color32::from_rgb(255, 214, 130));
+            let redo_txt = egui::RichText::new("REDO ⏵").size(txt_size).color(egui::Color32::from_rgb(255, 214, 130));
+            let scr_txt  = egui::RichText::new("🎲 SCRAMBLE").size(txt_size).color(egui::Color32::from_rgb(180, 180, 255));
+            let slv_txt  = egui::RichText::new("✔ SOLVE").size(txt_size).color(egui::Color32::from_rgb(150, 255, 180));
 
-                ui.add_space(10.0);
-
-                // Buton Solve
-                if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("✔ SOLVE").size(txt_size).color(egui::Color32::from_rgb(150, 255, 180)))).clicked() && !history.0.is_empty() {
-                    queue.0.clear();
-                    let solution: Vec<CubeMove> = history.0.drain(..).rev()
-                        .map(|m| m.inverse())
-                        .collect();
-                    queue.0.extend(solution.into_iter().map(|m| (m, false)));
-                }
-            });
+            if compact {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        do_undo = ui.add_enabled(can_undo, egui::Button::new(undo_txt.clone()).min_size(small_btn)).clicked();
+                        ui.add_space(8.0);
+                        do_redo = ui.add_enabled(can_redo, egui::Button::new(redo_txt.clone()).min_size(small_btn)).clicked();
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        do_scramble = ui.add_sized(btn_size, egui::Button::new(scr_txt.clone())).clicked();
+                        ui.add_space(8.0);
+                        do_solve = ui.add_sized(btn_size, egui::Button::new(slv_txt.clone())).clicked();
+                    });
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    do_scramble = ui.add_sized(btn_size, egui::Button::new(scr_txt)).clicked();
+                    ui.add_space(8.0);
+                    do_solve = ui.add_sized(btn_size, egui::Button::new(slv_txt)).clicked();
+                    ui.add_space(8.0);
+                    do_undo = ui.add_enabled(can_undo, egui::Button::new(undo_txt).min_size(small_btn)).clicked();
+                    ui.add_space(8.0);
+                    do_redo = ui.add_enabled(can_redo, egui::Button::new(redo_txt).min_size(small_btn)).clicked();
+                });
+            }
         });
+
+    if do_scramble {
+        queue.0.clear();
+        redo.0.clear();
+        stats.phase = Phase::Scrambling;
+        stats.moves = 0;
+        let seed = (time.elapsed_seconds() * 100_000.0) as u64;
+        let mut rng = Rng::new(seed);
+        let moves = [
+            CubeMove::r(), CubeMove::ri(), CubeMove::l(), CubeMove::li(),
+            CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
+            CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
+        ];
+        // Fara aceeasi fata de doua ori la rand (mutarile s-ar anula/combina).
+        let mut last_layer: Option<(u8, i32)> = None;
+        let mut count = 0;
+        while count < 20 {
+            let mv = moves[rng.range(12)];
+            if last_layer == Some((mv.layer_axis, mv.layer_value)) { continue; }
+            last_layer = Some((mv.layer_axis, mv.layer_value));
+            queue.0.push_back((mv, true));
+            count += 1;
+        }
+    }
+
+    if do_solve && !history.0.is_empty() {
+        queue.0.clear();
+        redo.0.clear();
+        stats.phase = Phase::Idle;
+        let solution: Vec<CubeMove> = history.0.drain(..).rev()
+            .map(|m| m.inverse())
+            .collect();
+        queue.0.extend(solution.into_iter().map(|m| (m, false)));
+    }
+
+    if do_undo {
+        undo_move(&mut history, &mut redo, &mut queue);
+    }
+    if do_redo {
+        redo_move(&mut redo, &mut queue);
+    }
 }
 // ── Cube components ───────────────────────────────────────────────────────────
 
