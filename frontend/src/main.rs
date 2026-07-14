@@ -8,6 +8,8 @@ const CUBIE_SIZE: f32 = 0.92;
 const STICKER_SIZE: f32 = 0.78;
 const FACE_OFFSET: f32 = CUBIE_SIZE / 2.0 + 0.005;
 const ROTATION_DURATION: f32 = 0.18;
+// Cand asteapta multe mutari (scramble/solve), animatia accelereaza.
+const ROTATION_DURATION_FAST: f32 = 0.07;
 
 fn main() {
     App::new()
@@ -66,7 +68,14 @@ struct DragData {
 #[derive(Clone, Copy)]
 enum DragKind {
     Camera,
-    Face { grid_pos: GridPos, hit_world: Vec3 },
+    Face { grid_pos: GridPos, hit_world: Vec3, normal: Vec3 },
+}
+
+fn in_rotating_layer(active: &ActiveRotation, gp: &GridPos) -> bool {
+    active.0.as_ref().map_or(false, |s| {
+        let v = match s.cube_move.layer_axis { 0 => gp.x, 1 => gp.y, _ => gp.z };
+        v == s.cube_move.layer_value
+    })
 }
 
 fn apply_rotation_delta(state: &mut OrbitCamera, delta: Vec2) {
@@ -93,12 +102,11 @@ fn pointer_input(
     touches: Res<Touches>,
     cubie_q: Query<(Entity, &GridPos, &Transform)>,
     mut queue: ResMut<MoveQueue>,
-    mut history: ResMut<MoveHistory>,
     mut egui_ctx: EguiContexts,
 ) {
     let egui_active = egui_ctx.ctx_mut().is_using_pointer() || egui_ctx.ctx_mut().wants_pointer_input();
 
-    if egui_active || active_rot.0.is_some() {
+    if egui_active {
         pointer.drag = None;
         pointer.prev_pinch_distance = None;
         mouse_motion.clear();
@@ -148,10 +156,12 @@ fn pointer_input(
     let released = touch_just_released || mouse_just_released;
 
     // Start a new drag: raycast at press position.
+    // Un strat aflat in rotatie nu accepta face-drag; camera ramane mereu libera.
     if let Some(start_pos) = pressed_now {
         let kind = match raycast_cubie(camera, cam_transform, start_pos, &cubie_q) {
-            Some((gp, hw)) => DragKind::Face { grid_pos: gp, hit_world: hw },
-            None => DragKind::Camera,
+            Some((gp, hw, n)) if !in_rotating_layer(&active_rot, &gp) =>
+                DragKind::Face { grid_pos: gp, hit_world: hw, normal: n },
+            _ => DragKind::Camera,
         };
         pointer.drag = Some(DragData { start_screen: start_pos, kind, committed: false });
     }
@@ -160,14 +170,13 @@ fn pointer_input(
     if let Some(drag) = pointer.drag.as_mut() {
         match drag.kind {
             DragKind::Camera => apply_rotation_delta(&mut cam_state, delta_now),
-            DragKind::Face { grid_pos, hit_world } => {
+            DragKind::Face { grid_pos, hit_world, normal } => {
                 if !drag.committed {
                     if let Some(now) = pos_now {
                         let total = now - drag.start_screen;
                         if total.length() > 20.0 {
-                            if let Some(mv) = determine_move(camera, cam_transform, hit_world, &grid_pos, total) {
-                                queue.0.push_back(mv);
-                                history.0.push(mv);
+                            if let Some(mv) = determine_move(camera, cam_transform, hit_world, normal, &grid_pos, total) {
+                                queue.0.push_back((mv, true));
                                 drag.committed = true;
                             }
                         }
@@ -198,29 +207,33 @@ fn raycast_cubie(
     cam_transform: &GlobalTransform,
     screen_pos: Vec2,
     cubie_q: &Query<(Entity, &GridPos, &Transform)>,
-) -> Option<(GridPos, Vec3)> {
+) -> Option<(GridPos, Vec3, Vec3)> {
     let ray = camera.viewport_to_world(cam_transform, screen_pos)?;
     let origin = ray.origin;
     let dir: Vec3 = ray.direction.as_vec3();
     let half = CUBIE_SIZE / 2.0;
 
-    let mut best: Option<(f32, GridPos, Vec3)> = None;
+    let mut best: Option<(f32, GridPos, Vec3, Vec3)> = None;
     for (_entity, grid_pos, transform) in cubie_q.iter() {
         let inv = transform.compute_matrix().inverse();
         let local_origin = inv.transform_point3(origin);
         let local_dir = inv.transform_vector3(dir);
-        if let Some(t) = ray_aabb_intersect(local_origin, local_dir, Vec3::splat(-half), Vec3::splat(half)) {
-            if t > 0.0 && best.as_ref().map_or(true, |(bt, _, _)| t < *bt) {
-                best = Some((t, *grid_pos, origin + dir * t));
+        if let Some((t, entry_axis)) = ray_aabb_intersect(local_origin, local_dir, Vec3::splat(-half), Vec3::splat(half)) {
+            if t > 0.0 && best.as_ref().map_or(true, |(bt, ..)| t < *bt) {
+                let mut local_normal = Vec3::ZERO;
+                local_normal[entry_axis] = if local_dir[entry_axis] > 0.0 { -1.0 } else { 1.0 };
+                let world_normal = (transform.rotation * local_normal).normalize();
+                best = Some((t, *grid_pos, origin + dir * t, world_normal));
             }
         }
     }
-    best.map(|(_, gp, hw)| (gp, hw))
+    best.map(|(_, gp, hw, n)| (gp, hw, n))
 }
 
-fn ray_aabb_intersect(origin: Vec3, dir: Vec3, aabb_min: Vec3, aabb_max: Vec3) -> Option<f32> {
+fn ray_aabb_intersect(origin: Vec3, dir: Vec3, aabb_min: Vec3, aabb_max: Vec3) -> Option<(f32, usize)> {
     let mut tmin = f32::NEG_INFINITY;
     let mut tmax = f32::INFINITY;
+    let mut entry_axis = 0usize;
     for i in 0..3 {
         let o = origin[i];
         let d = dir[i];
@@ -230,19 +243,20 @@ fn ray_aabb_intersect(origin: Vec3, dir: Vec3, aabb_min: Vec3, aabb_max: Vec3) -
             let t1 = (aabb_min[i] - o) / d;
             let t2 = (aabb_max[i] - o) / d;
             let (tn, tf) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
-            if tn > tmin { tmin = tn; }
+            if tn > tmin { tmin = tn; entry_axis = i; }
             if tf < tmax { tmax = tf; }
             if tmin > tmax { return None; }
         }
     }
     if tmax < 0.0 { return None; }
-    Some(if tmin > 0.0 { tmin } else { tmax })
+    Some(if tmin > 0.0 { (tmin, entry_axis) } else { (tmax, entry_axis) })
 }
 
 fn determine_move(
     camera: &Camera,
     cam_transform: &GlobalTransform,
     hit_world: Vec3,
+    normal: Vec3,
     grid_pos: &GridPos,
     drag_screen: Vec2,
 ) -> Option<CubeMove> {
@@ -252,6 +266,9 @@ fn determine_move(
 
     let mut best: Option<(f32, usize, f32)> = None;
     for (i, axis) in axes.iter().enumerate() {
+        // Ca la cubul fizic: un drag pe o fata actioneaza doar straturile din
+        // planul ei, nu rotatia in jurul normalei (aia se face din fetele vecine).
+        if axis.dot(normal).abs() > 0.5 { continue; }
         let tangent_world = axis.cross(hit_world);
         if tangent_world.length_squared() < 1e-4 { continue; }
         let probe = hit_world + tangent_world.normalize() * 0.2;
@@ -329,8 +346,10 @@ impl CubeMove {
     }
 }
 
+/// Coada de mutari; bool = se inregistreaza in history la executie.
+/// Mutarile din Solve nu se inregistreaza, altfel "rezolvarea" s-ar anula singura.
 #[derive(Resource, Default)]
-pub struct MoveQueue(pub VecDeque<CubeMove>);
+pub struct MoveQueue(pub VecDeque<(CubeMove, bool)>);
 
 #[derive(Resource, Default)]
 pub struct MoveHistory(pub Vec<CubeMove>);
@@ -351,7 +370,6 @@ pub struct ActiveRotation(pub Option<RotationState>);
 fn keyboard_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut queue: ResMut<MoveQueue>,
-    mut history: ResMut<MoveHistory>,
     mut egui_ctx: EguiContexts,
 ) {
     // Nu captura taste daca egui are focus
@@ -374,8 +392,7 @@ fn keyboard_input(
     for (key, cw, ccw) in &mappings {
         if keys.just_pressed(*key) {
             let mv = if shift { *ccw } else { *cw };
-            queue.0.push_back(mv);
-            history.0.push(mv);
+            queue.0.push_back((mv, true));
         }
     }
 }
@@ -405,6 +422,7 @@ fn snap_rotation(q: Quat) -> Quat {
 fn process_rotation(
     mut active: ResMut<ActiveRotation>,
     mut move_queue: ResMut<MoveQueue>,
+    mut history: ResMut<MoveHistory>,
     mut cubie_query: Query<(Entity, &mut GridPos, &mut Transform)>,
     time: Res<Time>,
 ) {
@@ -439,7 +457,10 @@ fn process_rotation(
             }
         }
     } else if active.0.is_none() {
-        if let Some(mv) = move_queue.0.pop_front() {
+        if let Some((mv, record)) = move_queue.0.pop_front() {
+            // History reflecta doar mutari executate: push abia la pornirea rotatiei,
+            // ca Solve/Scramble apasate in timpul animatiilor sa nu-l corupa.
+            if record { history.0.push(mv); }
             let mut entities = Vec::new();
             let mut initial_transforms = Vec::new();
             for (entity, gp, tf) in cubie_query.iter() {
@@ -449,10 +470,11 @@ fn process_rotation(
                     initial_transforms.push(*tf);
                 }
             }
+            let duration = if move_queue.0.len() >= 5 { ROTATION_DURATION_FAST } else { ROTATION_DURATION };
             active.0 = Some(RotationState {
                 cube_move: mv,
                 elapsed: 0.0,
-                duration: ROTATION_DURATION,
+                duration,
                 entities,
                 initial_transforms,
             });
@@ -503,7 +525,6 @@ fn egui_ui(
                 // Buton Scramble
                 if ui.button(egui::RichText::new("🎲 SCRAMBLE").size(16.0).color(egui::Color32::from_rgb(180, 180, 255))).clicked() {
                     queue.0.clear();
-                    history.0.clear();
                     let seed = (time.elapsed_seconds() * 100_000.0) as u64;
                     let mut rng = Rng::new(seed);
                     let moves = [
@@ -511,10 +532,15 @@ fn egui_ui(
                         CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
                         CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
                     ];
-                    for _ in 0..20 {
+                    // Fara aceeasi fata de doua ori la rand (mutarile s-ar anula/combina).
+                    let mut last_layer: Option<(u8, i32)> = None;
+                    let mut count = 0;
+                    while count < 20 {
                         let mv = moves[rng.range(12)];
-                        queue.0.push_back(mv);
-                        history.0.push(mv);
+                        if last_layer == Some((mv.layer_axis, mv.layer_value)) { continue; }
+                        last_layer = Some((mv.layer_axis, mv.layer_value));
+                        queue.0.push_back((mv, true));
+                        count += 1;
                     }
                 }
 
@@ -526,7 +552,7 @@ fn egui_ui(
                     let solution: Vec<CubeMove> = history.0.drain(..).rev()
                         .map(|m| m.inverse())
                         .collect();
-                    queue.0.extend(solution);
+                    queue.0.extend(solution.into_iter().map(|m| (m, false)));
                 }
             });
         });
