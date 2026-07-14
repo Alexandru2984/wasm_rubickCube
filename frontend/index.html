@@ -109,29 +109,70 @@
         addEventListener('load', function () { navigator.serviceWorker.register('/sw.js'); });
       }
 
-      // Erorile fatale (panic in WASM ajunge ca excepție JS) primesc un
-      // banner vizibil in loc de un canvas înghețat în tăcere.
+      // Bevy semnaleaza pornirea completa prin acest eveniment.
+      var __started = false;
+      addEventListener('TrunkApplicationStarted', function () { __started = true; });
+
+      // Recuperare: goleste cache-urile + service worker-ul si reincarca.
+      // Rezolva cazul in care browserul a retinut o versiune stricata.
+      function __hardReload() {
+        var done = function () { location.reload(); };
+        try {
+          var jobs = [];
+          if (window.caches && caches.keys) {
+            jobs.push(caches.keys().then(function (ks) {
+              return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+            }));
+          }
+          if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+            jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+              return Promise.all(rs.map(function (r) { return r.unregister(); }));
+            }));
+          }
+          Promise.all(jobs).then(done, done);
+        } catch (e) { done(); }
+      }
+
+      // Panic in WASM sau blocaj la incarcare → mesaj vizibil in loc de un
+      // ecran de incarcare inghetat in tacere.
       (function () {
         var shown = false;
-        function showCrashBanner() {
+        function showError(msg) {
           if (shown) return;
           shown = true;
+          var loader = document.getElementById('loader');
+          if (loader) {
+            var lbl = document.getElementById('ldr-label');
+            if (lbl) lbl.textContent = msg;
+          }
           var el = document.createElement('div');
           el.style.cssText =
             'position:fixed;top:0;left:0;right:0;z-index:99;padding:10px 14px;' +
             'background:#b81205;color:#fff;font:14px -apple-system,sans-serif;text-align:center;';
-          el.textContent = 'A apărut o eroare neașteptată — reîncarcă pagina. Detalii în consolă.';
-          var btn = document.createElement('button');
-          btn.textContent = 'Reîncarcă';
-          btn.style.cssText = 'margin-left:12px;padding:4px 14px;border:0;border-radius:6px;cursor:pointer;';
-          btn.onclick = function () { location.reload(); };
-          el.appendChild(btn);
+          el.textContent = msg + ' ';
+          var reload = document.createElement('button');
+          reload.textContent = 'Reîncarcă';
+          reload.style.cssText = 'margin:0 6px;padding:4px 14px;border:0;border-radius:6px;cursor:pointer;';
+          reload.onclick = function () { location.reload(); };
+          var reset = document.createElement('button');
+          reset.textContent = 'Golește cache';
+          reset.style.cssText = 'margin:0 6px;padding:4px 14px;border:0;border-radius:6px;cursor:pointer;';
+          reset.onclick = __hardReload;
+          el.appendChild(reload);
+          el.appendChild(reset);
           document.body.appendChild(el);
         }
         addEventListener('error', function (e) {
-          if (e.error) showCrashBanner();
+          if (e.error) showError('A apărut o eroare neașteptată.');
         });
-        addEventListener('unhandledrejection', showCrashBanner);
+        addEventListener('unhandledrejection', function () {
+          showError('Încărcarea a eșuat.');
+        });
+        // Watchdog: daca aplicatia nu a pornit in 30s, e blocata (retea lenta,
+        // modul necompatibil, memorie insuficienta pe mobil). Ofera recuperare.
+        setTimeout(function () {
+          if (!__started) showError('Se încarcă anevoios. Dacă rămâne blocat, încearcă:');
+        }, 30000);
       })();
     </script>
   </body>

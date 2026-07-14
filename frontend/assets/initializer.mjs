@@ -1,5 +1,6 @@
 // Trunk initializer: raporteaza progresul descarcarii WASM in ecranul de
 // incarcare din index.html si il ascunde cand aplicatia a pornit.
+// v2 — hash nou dupa fixul de MIME .mjs (browserele cachasera octet-stream).
 export default function initializer() {
   const bar = () => document.getElementById('ldr-bar');
   const label = () => document.getElementById('ldr-label');
