@@ -1,4 +1,5 @@
 mod solver;
+mod trainer;
 
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
@@ -6,13 +7,19 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use solver::SolverContext;
 use std::collections::VecDeque;
 use std::f32::consts::{FRAC_PI_2, PI};
+use trainer::Trainer;
 
 const CUBIE_SIZE: f32 = 0.92;
 const STICKER_SIZE: f32 = 0.78;
 const FACE_OFFSET: f32 = CUBIE_SIZE / 2.0 + 0.005;
 const ROTATION_DURATION: f32 = 0.18;
-// Cand asteapta multe mutari (scramble/solve), animatia accelereaza.
+// Cand asteapta multe mutari (scramble/solve), animatia accelereaza; cu cozi
+// foarte lungi (scramble de cub mare) merge si mai repede.
 const ROTATION_DURATION_FAST: f32 = 0.07;
+const ROTATION_DURATION_TURBO: f32 = 0.03;
+// Zoom-ul acomodeaza tot spectrul de marimi (2x2 ... 20x20).
+const ZOOM_MIN: f32 = 2.5;
+const ZOOM_MAX: f32 = 120.0;
 // Drag live: prag de la care se alege stratul si sensibilitatea unghiului.
 const DRAG_LOCK_THRESHOLD: f32 = 10.0;
 const DRAG_ANGLE_PER_PIXEL: f32 = FRAC_PI_2 / 130.0;
@@ -23,7 +30,7 @@ fn main() {
 
     let size = storage_get(STORE_SIZE)
         .and_then(|s| s.parse::<i32>().ok())
-        .filter(|n| (2..=5).contains(n))
+        .filter(|n| (2..=20).contains(n))
         .unwrap_or(3);
 
     App::new()
@@ -50,6 +57,7 @@ fn main() {
         .insert_resource(RedoStack::default())
         .insert_resource(GameStats::default())
         .insert_resource(SolverContext::default())
+        .insert_resource(Trainer::default())
         .insert_resource(ActiveRotation::default())
         .add_systems(Startup, (setup, restore_state).chain())
         .add_systems(Update, (
@@ -61,6 +69,7 @@ fn main() {
             run_solver,
             update_game_phase,
             rebuild_cube,
+            apply_trainer_setup,
             persist_state,
             egui_ui,
         ))
@@ -70,6 +79,17 @@ fn main() {
 fn camera_radius(n: i32) -> f32 {
     3.4 * n as f32
 }
+
+/// Umbrele de la point light se randeaza intr-un cubemap peste toti cubii;
+/// la cuburi mari (~mii de piese) devine prea scump, deci le oprim.
+fn shadows_ok(n: i32) -> bool {
+    n <= 7
+}
+
+/// Marcheaza lumina care arunca umbre, ca sa-i putem comuta shadows la
+/// schimbarea marimii cubului.
+#[derive(Component)]
+struct ShadowLight;
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 
@@ -160,7 +180,7 @@ fn pointer_input(
         finish_manual(&mut pointer, &mut active_rot, &mut history, &mut redo, &mut stats, time.elapsed_seconds_f64());
         let d = touch_positions[0].distance(touch_positions[1]);
         if let Some(prev) = pointer.prev_pinch_distance {
-            cam_state.radius = (cam_state.radius - (d - prev) * 0.03).clamp(3.5, 30.0);
+            cam_state.radius = (cam_state.radius - (d - prev) * 0.03).clamp(ZOOM_MIN, ZOOM_MAX);
         }
         pointer.prev_pinch_distance = Some(d);
         pointer.drag = None;
@@ -410,7 +430,7 @@ fn camera_zoom(
             MouseScrollUnit::Pixel => ev.y * 0.005,
         };
         state.radius -= delta;
-        state.radius = state.radius.clamp(3.5, 30.0);
+        state.radius = state.radius.clamp(ZOOM_MIN, ZOOM_MAX);
     }
 }
 
@@ -423,7 +443,7 @@ fn max_coord(n: i32) -> i32 {
     n - 1
 }
 
-/// Marimea cubului (n x n x n), 2..=5.
+/// Marimea cubului (n x n x n), 2..=20.
 #[derive(Resource)]
 pub struct CubeSize(pub i32);
 
@@ -552,15 +572,14 @@ pub struct ActiveRotation(pub Option<RotationState>);
 
 // ── Persistenta (localStorage) ────────────────────────────────────────────────
 
-// Chei .v2: formatul codec s-a schimbat la coordonate dublate (NxN), deci
-// datele salvate de versiunea veche nu mai sunt citite.
-const STORE_HISTORY: &str = "cube.v2.history";
-const STORE_REDO: &str = "cube.v2.redo";
-const STORE_SIZE: &str = "cube.v2.size";
+// Chei .v3: codec-ul are acum stratul pe 2 cifre (cuburi pana la 20x20).
+const STORE_HISTORY: &str = "cube.v3.history";
+const STORE_REDO: &str = "cube.v3.redo";
+const STORE_SIZE: &str = "cube.v3.size";
 
 /// Recordul se tine separat pe fiecare marime de cub.
 fn store_best_key(n: i32) -> String {
-    format!("cube.v2.best.{n}")
+    format!("cube.v3.best.{n}")
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -588,33 +607,37 @@ fn storage_get(_key: &str) -> Option<String> {
     None
 }
 
-/// O mutare = 3 cifre: axa (0-2), stratul in coordonate dublate (+4 → 0-8,
-/// iar 9 = tot cubul), sferturi de tura (+2 → 0-4).
+/// O mutare = 4 cifre: axa (0-2), stratul in coordonate dublate pe 2 cifre
+/// (+40 → 21..59 pentru -19..19; "99" = tot cubul), sferturi de tura (+2).
 fn encode_moves(moves: &[CubeMove]) -> String {
     moves
         .iter()
         .map(|m| {
             let quarters = (m.angle / FRAC_PI_2).round() as i32;
-            let value = if m.layer_value == LAYER_ALL { 9 } else { m.layer_value + 4 };
-            format!("{}{}{}", m.layer_axis, value, quarters + 2)
+            let value = if m.layer_value == LAYER_ALL { 99 } else { m.layer_value + 40 };
+            format!("{}{:02}{}", m.layer_axis, value, quarters + 2)
         })
         .collect()
 }
 
 fn decode_moves(s: &str) -> Option<Vec<CubeMove>> {
     let bytes = s.as_bytes();
-    if !bytes.len().is_multiple_of(3) {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     let axes = [Vec3::X, Vec3::Y, Vec3::Z];
     bytes
-        .chunks(3)
+        .chunks(4)
         .map(|c| {
             let axis = (c[0] as char).to_digit(10)?;
-            let raw_value = (c[1] as char).to_digit(10)? as i32;
-            let value = if raw_value == 9 { LAYER_ALL } else { raw_value - 4 };
-            let quarters = (c[2] as char).to_digit(10)? as i32 - 2;
-            if axis > 2 || quarters == 0 || !(-2..=2).contains(&quarters) {
+            let d1 = (c[1] as char).to_digit(10)?;
+            let d2 = (c[2] as char).to_digit(10)?;
+            let raw_value = (d1 * 10 + d2) as i32;
+            let value = if raw_value == 99 { LAYER_ALL } else { raw_value - 40 };
+            let quarters = (c[3] as char).to_digit(10)? as i32 - 2;
+            if axis > 2 || quarters == 0 || !(-2..=2).contains(&quarters)
+                || (value != LAYER_ALL && !(-19..=19).contains(&value))
+            {
                 return None;
             }
             Some(CubeMove {
@@ -644,17 +667,85 @@ fn restore_state(
         return;
     };
     for mv in &moves {
-        let q = Quat::from_axis_angle(mv.rotation_axis, mv.angle);
-        for (mut gp, mut tf) in cubies.iter_mut() {
-            let layer_val = match mv.layer_axis { 0 => gp.x, 1 => gp.y, _ => gp.z };
-            if !mv.affects(layer_val) { continue; }
-            let (nx, ny, nz) = rotate_grid_pos(gp.x, gp.y, gp.z, mv.rotation_axis, mv.angle);
-            gp.x = nx; gp.y = ny; gp.z = nz;
-            tf.translation = Vec3::new(nx as f32, ny as f32, nz as f32) * 0.5;
-            tf.rotation = snap_rotation(q * tf.rotation);
-        }
+        apply_move_instant(&mut cubies, mv);
     }
     history.0 = moves;
+}
+
+/// Aplica o mutare fara animatie: permuta grila si compune orientarile,
+/// exact ca finalize-ul din process_rotation.
+fn apply_move_instant(cubies: &mut Query<(&mut GridPos, &mut Transform)>, mv: &CubeMove) {
+    let q = Quat::from_axis_angle(mv.rotation_axis, mv.angle);
+    for (mut gp, mut tf) in cubies.iter_mut() {
+        let layer_val = match mv.layer_axis { 0 => gp.x, 1 => gp.y, _ => gp.z };
+        if !mv.affects(layer_val) { continue; }
+        let (nx, ny, nz) = rotate_grid_pos(gp.x, gp.y, gp.z, mv.rotation_axis, mv.angle);
+        gp.x = nx; gp.y = ny; gp.z = nz;
+        tf.translation = Vec3::new(nx as f32, ny as f32, nz as f32) * 0.5;
+        tf.rotation = snap_rotation(q * tf.rotation);
+    }
+}
+
+/// Executa setup-ul cerut din fereastra trainer-ului: readuce cubul la
+/// rezolvat (inversul istoricului, instant), apoi aplica inversul
+/// algoritmului ales — executarea algoritmului rezolva garantat cubul.
+/// Mutarile de setup intra in history, ca starea sa ramana consistenta cu
+/// persistenta si cu REWIND.
+#[allow(clippy::too_many_arguments)]
+fn apply_trainer_setup(
+    mut tr: ResMut<Trainer>,
+    mut size: ResMut<CubeSize>,
+    queue: Res<MoveQueue>,
+    mut history: ResMut<MoveHistory>,
+    mut redo: ResMut<RedoStack>,
+    mut stats: ResMut<GameStats>,
+    active: Res<ActiveRotation>,
+    pointer: Res<PointerState>,
+    time: Res<Time>,
+    mut cubies: Query<(&mut GridPos, &mut Transform)>,
+) {
+    let Some(case) = tr.pending else { return; };
+
+    // Trainer-ul e pentru 3x3: comuta si asteapta rebuild-ul.
+    if size.0 != 3 {
+        size.0 = 3;
+        return;
+    }
+    let settled = queue.0.is_empty() && active.0.is_none() && pointer.manual.is_none();
+    if !settled || cubies.iter().count() != 26 {
+        return;
+    }
+
+    tr.pending = None;
+    tr.current = Some(case);
+
+    let undo: Vec<CubeMove> = history.0.iter().rev().map(|m| m.inverse()).collect();
+    for mv in &undo {
+        apply_move_instant(&mut cubies, mv);
+    }
+    history.0.clear();
+    redo.0.clear();
+
+    let alg = trainer::parse_alg(trainer::ALGS[case].moves).expect("algoritm valid (verificat in teste)");
+    let mut setup = trainer::inverse_alg(&alg);
+    if tr.random_auf {
+        // Un U aleator inainte de caz, ca recunoasterea sa nu fie mereu
+        // din acelasi unghi.
+        let quarters = [-FRAC_PI_2, -PI, FRAC_PI_2][(time.elapsed_seconds() * 977.0) as usize % 3];
+        setup.push(CubeMove {
+            rotation_axis: Vec3::Y,
+            layer_axis: 1,
+            layer_value: max_coord(3),
+            angle: quarters,
+        });
+    }
+    for mv in &setup {
+        apply_move_instant(&mut cubies, mv);
+        history.0.push(*mv);
+    }
+
+    stats.phase = Phase::Ready;
+    stats.moves = 0;
 }
 
 fn persist_state(history: Res<MoveHistory>, redo: Res<RedoStack>) {
@@ -903,7 +994,11 @@ fn process_rotation(
                     initial_transforms.push(*tf);
                 }
             }
-            let duration = if move_queue.0.len() >= 5 { ROTATION_DURATION_FAST } else { ROTATION_DURATION };
+            let duration = match move_queue.0.len() {
+                40.. => ROTATION_DURATION_TURBO,
+                5..=39 => ROTATION_DURATION_FAST,
+                _ => ROTATION_DURATION,
+            };
             active.0 = Some(RotationState {
                 cube_move: mv,
                 elapsed: 0.0,
@@ -957,13 +1052,15 @@ fn generate_scramble(seed: u64, count: usize, n: i32) -> Vec<CubeMove> {
     out
 }
 
-/// Lungimea de scramble potrivita marimii cubului.
+/// Lungimea de scramble potrivita marimii cubului: creste cu numarul de
+/// straturi (~10 mutari per strat), plafonat ca sa nu dureze o vesnicie.
 fn scramble_len(n: i32) -> usize {
     match n {
         2 => 10,
         3 => 20,
         4 => 35,
-        _ => 50,
+        5 => 50,
+        _ => (n as usize * 10).min(150),
     }
 }
 
@@ -976,33 +1073,96 @@ fn egui_ui(
     mut stats: ResMut<GameStats>,
     mut solver_ctx: ResMut<SolverContext>,
     mut size: ResMut<CubeSize>,
+    mut tr: ResMut<Trainer>,
     pointer: Res<PointerState>,
     time: Res<Time>,
 ) {
     let ctx = contexts.ctx_mut();
 
-    // Selector de marime — sus-dreapta, discret.
+    // Selector de marime — sus-dreapta: stepper 2..20.
     egui::Area::new("size_select".into())
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                for n in 2..=5 {
-                    let selected = size.0 == n;
-                    let label = egui::RichText::new(format!("{n}×{n}"))
-                        .size(13.0)
-                        .color(if selected {
-                            egui::Color32::WHITE
-                        } else {
-                            egui::Color32::from_rgba_unmultiplied(200, 200, 220, 130)
-                        });
-                    if ui.add_sized(egui::vec2(44.0, 30.0), egui::SelectableLabel::new(selected, label)).clicked()
-                        && !selected
-                    {
-                        size.0 = n;
-                    }
+                let btn = |t: &str| egui::Button::new(egui::RichText::new(t).size(15.0));
+                if ui.add_enabled(size.0 > 2, btn("−").min_size(egui::vec2(30.0, 30.0))).clicked() {
+                    size.0 -= 1;
+                }
+                ui.label(
+                    egui::RichText::new(format!("{0}×{0}×{0}", size.0))
+                        .size(14.0)
+                        .color(egui::Color32::WHITE),
+                );
+                if ui.add_enabled(size.0 < 20, btn("+").min_size(egui::vec2(30.0, 30.0))).clicked() {
+                    size.0 += 1;
                 }
             });
         });
+
+    // Trainer de algoritmi — toggle sub selectorul de marime.
+    egui::Area::new("trainer_toggle".into())
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 48.0))
+        .show(ctx, |ui| {
+            let label = egui::RichText::new("Algoritmi").size(13.0);
+            if ui.add_sized(egui::vec2(96.0, 26.0), egui::SelectableLabel::new(tr.open, label)).clicked() {
+                tr.open = !tr.open;
+            }
+        });
+
+    if tr.open {
+        let mut open = true;
+        egui::Window::new("Algoritmi 3×3 — OLL / PLL")
+            .open(&mut open)
+            .default_width(330.0)
+            .max_height(430.0)
+            .vscroll(true)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("Alege un caz: cubul se aseaza in starea lui, iar algoritmul il rezolva. Cronometrul porneste la prima mutare.")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(170, 174, 200)),
+                );
+                ui.checkbox(&mut tr.random_auf, "Unghi de recunoastere aleator (AUF)");
+                ui.separator();
+
+                for (title, cat, open_default) in [
+                    ("PLL — permutarea ultimului strat (21)", trainer::Category::Pll, true),
+                    ("OLL — orientarea ultimului strat (57)", trainer::Category::Oll, false),
+                ] {
+                    egui::CollapsingHeader::new(title).default_open(open_default).show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, alg) in trainer::ALGS.iter().enumerate() {
+                                if alg.category != cat { continue; }
+                                if ui.selectable_label(tr.current == Some(i), alg.name).clicked() {
+                                    tr.pending = Some(i);
+                                }
+                            }
+                        });
+                    });
+                }
+
+                if let Some(cur) = tr.current {
+                    ui.separator();
+                    ui.label(egui::RichText::new(trainer::ALGS[cur].name).strong().size(15.0));
+                    ui.label(egui::RichText::new(trainer::ALGS[cur].moves).monospace().size(13.0));
+                    ui.horizontal(|ui| {
+                        if ui.button("Din nou").clicked() {
+                            tr.pending = Some(cur);
+                        }
+                        if ui.button("Caz aleator").clicked() {
+                            let cat = trainer::ALGS[cur].category;
+                            let pool: Vec<usize> = trainer::ALGS.iter().enumerate()
+                                .filter(|(i, a)| a.category == cat && *i != cur)
+                                .map(|(i, _)| i)
+                                .collect();
+                            let mut rng = Rng::new((time.elapsed_seconds() * 100_000.0) as u64);
+                            tr.pending = Some(pool[rng.range(pool.len())]);
+                        }
+                    });
+                }
+            });
+        tr.open = open;
+    }
 
     // Layout compact pe ecrane inguste (telefoane): butoane mari, jos, si
     // hint-uri de gesturi in loc de taste.
@@ -1036,10 +1196,11 @@ fn egui_ui(
     }
 
     // 2. HUD cronometru + contor (centrat sus, sub hint-urile de pe mobil).
+    let case_tag = tr.current.map(|i| format!("{}  ·  ", trainer::ALGS[i].name)).unwrap_or_default();
     let hud_text = match stats.phase {
-        Phase::Ready => Some("⏱ cronometrul porneste la prima mutare".to_string()),
+        Phase::Ready => Some(format!("{case_tag}⏱ cronometrul porneste la prima mutare")),
         Phase::Running => Some(format!(
-            "⏱ {}   ·   {} mutari",
+            "{case_tag}⏱ {}   ·   {} mutari",
             fmt_time(time.elapsed_seconds_f64() - stats.start_time),
             stats.moves
         )),
@@ -1224,11 +1385,14 @@ fn setup(
         ..default()
     });
 
-    commands.spawn(PointLightBundle {
-        point_light: PointLight { intensity: 4_000_000.0, shadows_enabled: true, ..default() },
-        transform: Transform::from_xyz(6.0, 10.0, 6.0),
-        ..default()
-    });
+    commands.spawn((
+        PointLightBundle {
+            point_light: PointLight { intensity: 4_000_000.0, shadows_enabled: shadows_ok(size.0), ..default() },
+            transform: Transform::from_xyz(6.0, 10.0, 6.0),
+            ..default()
+        },
+        ShadowLight,
+    ));
     commands.spawn(PointLightBundle {
         point_light: PointLight {
             intensity: 1_500_000.0,
@@ -1326,6 +1490,7 @@ fn rebuild_cube(
     mut active: ResMut<ActiveRotation>,
     mut pointer: ResMut<PointerState>,
     mut cam: ResMut<OrbitCamera>,
+    mut shadow_light: Query<&mut PointLight, With<ShadowLight>>,
 ) {
     if !size.is_changed() || size.is_added() { return; }
 
@@ -1333,6 +1498,10 @@ fn rebuild_cube(
         commands.entity(entity).despawn_recursive();
     }
     spawn_cube(&mut commands, &mut meshes, &mut materials, size.0);
+
+    if let Ok(mut light) = shadow_light.get_single_mut() {
+        light.shadows_enabled = shadows_ok(size.0);
+    }
 
     queue.0.clear();
     history.0.clear();
@@ -1420,7 +1589,7 @@ mod tests {
 
     #[test]
     fn scramble_never_repeats_layer() {
-        for n in 2..=5 {
+        for n in [2, 3, 5, 10, 15, 20] {
             let max = max_coord(n);
             for seed in [1_u64, 42, 0xDEAD, 987654321] {
                 let s = generate_scramble(seed, scramble_len(n), n);
