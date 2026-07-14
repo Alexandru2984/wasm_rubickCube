@@ -1,6 +1,9 @@
+mod solver;
+
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use solver::SolverContext;
 use std::collections::VecDeque;
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -37,6 +40,7 @@ fn main() {
         .insert_resource(MoveHistory::default())
         .insert_resource(RedoStack::default())
         .insert_resource(GameStats::default())
+        .insert_resource(SolverContext::default())
         .insert_resource(ActiveRotation::default())
         .add_systems(Startup, (setup, restore_state).chain())
         .add_systems(Update, (
@@ -45,6 +49,7 @@ fn main() {
             camera_zoom,
             keyboard_input,
             process_rotation,
+            run_solver,
             update_game_phase,
             persist_state,
             egui_ui,
@@ -607,16 +612,23 @@ fn persist_state(history: Res<MoveHistory>, redo: Res<RedoStack>) {
     }
 }
 
-/// Tranzitiile de faza care depind de "cubul s-a asezat": scramble terminat
-/// si detectarea starii rezolvate (toate cubie-urile au aceeasi orientare —
-/// echivalent cu cubul rezolvat, modulo orientarea intregului cub).
+fn collect_cubies(cubies: &Query<(&GridPos, &Transform)>) -> Vec<(IVec3, Quat)> {
+    cubies
+        .iter()
+        .map(|(gp, tf)| (IVec3::new(gp.x, gp.y, gp.z), tf.rotation))
+        .collect()
+}
+
+/// Tranzitiile de faza care depind de "cubul s-a asezat": scramble terminat si
+/// detectarea starii rezolvate. Detectia foloseste facelets (fete uniforme),
+/// nu compararea orientarilor — centrele se pot rasuci invizibil pe loc.
 fn update_game_phase(
     queue: Res<MoveQueue>,
     active: Res<ActiveRotation>,
     pointer: Res<PointerState>,
     mut stats: ResMut<GameStats>,
     time: Res<Time>,
-    cubies: Query<&Transform, With<GridPos>>,
+    cubies: Query<(&GridPos, &Transform)>,
 ) {
     let settled = queue.0.is_empty() && active.0.is_none() && pointer.manual.is_none();
     if !settled { return; }
@@ -624,9 +636,7 @@ fn update_game_phase(
     match stats.phase {
         Phase::Scrambling => stats.phase = Phase::Ready,
         Phase::Running => {
-            let mut rotations = cubies.iter().map(|tf| tf.rotation);
-            let Some(first) = rotations.next() else { return; };
-            if rotations.all(|q| q.dot(first).abs() > 0.999) {
+            if solver::is_solved(&collect_cubies(&cubies)) {
                 let t = time.elapsed_seconds_f64() - stats.start_time;
                 let is_best = stats.best_time.is_none_or(|b| t < b);
                 if is_best {
@@ -638,6 +648,41 @@ fn update_game_phase(
         }
         _ => {}
     }
+}
+
+/// Executa rezolvarea Kociemba ceruta de butonul SOLVE. Ruleaza la un frame
+/// dupa click (UI-ul apuca sa arate starea de lucru), asteapta cubul asezat,
+/// si genereaza tabelele la prima folosire.
+fn run_solver(
+    mut ctx: ResMut<SolverContext>,
+    mut queue: ResMut<MoveQueue>,
+    mut history: ResMut<MoveHistory>,
+    mut redo: ResMut<RedoStack>,
+    active: Res<ActiveRotation>,
+    pointer: Res<PointerState>,
+    cubies: Query<(&GridPos, &Transform)>,
+) {
+    if !ctx.pending { return; }
+    let settled = queue.0.is_empty() && active.0.is_none() && pointer.manual.is_none();
+    if !settled { return; }
+
+    if ctx.table.is_none() {
+        // Generarea dureaza ~1-2s pe wasm; ramanem pending inca un frame ca
+        // eticheta "se pregateste" sa fie deja pe ecran in timpul blocarii.
+        ctx.table = Some(kewb::DataTable::default());
+        return;
+    }
+    ctx.pending = false;
+
+    let Some(moves) = solver::solve_scene(ctx.table.as_ref().unwrap(), &collect_cubies(&cubies)) else {
+        warn!("solver: starea cubului nu a putut fi citita");
+        return;
+    };
+    // Solutia readuce cubul la rezolvat: istoricul vechi nu mai descrie
+    // drumul inapoi, deci se goleste.
+    history.0.clear();
+    redo.0.clear();
+    queue.0.extend(moves.into_iter().map(|m| (m, false)));
 }
 
 // ── Keyboard input ────────────────────────────────────────────────────────────
@@ -810,6 +855,26 @@ impl Rng {
     fn range(&mut self, n: usize) -> usize { (self.next() as usize) % n }
 }
 
+/// Scramble aleator din mutari de fete, fara acelasi strat de doua ori la
+/// rand (mutarile consecutive pe acelasi strat se anuleaza sau se combina).
+fn generate_scramble(seed: u64, count: usize) -> Vec<CubeMove> {
+    let mut rng = Rng::new(seed);
+    let moves = [
+        CubeMove::r(), CubeMove::ri(), CubeMove::l(), CubeMove::li(),
+        CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
+        CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
+    ];
+    let mut out = Vec::with_capacity(count);
+    let mut last_layer: Option<(u8, i32)> = None;
+    while out.len() < count {
+        let mv = moves[rng.range(12)];
+        if last_layer == Some((mv.layer_axis, mv.layer_value)) { continue; }
+        last_layer = Some((mv.layer_axis, mv.layer_value));
+        out.push(mv);
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn egui_ui(
     mut contexts: EguiContexts,
@@ -817,6 +882,7 @@ fn egui_ui(
     mut queue: ResMut<MoveQueue>,
     mut redo: ResMut<RedoStack>,
     mut stats: ResMut<GameStats>,
+    mut solver_ctx: ResMut<SolverContext>,
     pointer: Res<PointerState>,
     time: Res<Time>,
 ) {
@@ -912,17 +978,20 @@ fn egui_ui(
     } else {
         (egui::Align2::LEFT_TOP, egui::vec2(12.0, 60.0))
     };
-    let btn_size = if compact { egui::vec2(150.0, 52.0) } else { egui::vec2(120.0, 32.0) };
-    let small_btn = if compact { egui::vec2(150.0, 44.0) } else { egui::vec2(120.0, 32.0) };
-    let txt_size = if compact { 18.0 } else { 15.0 };
+    let btn_size = if compact { egui::vec2(104.0, 52.0) } else { egui::vec2(112.0, 32.0) };
+    let small_btn = if compact { egui::vec2(150.0, 44.0) } else { egui::vec2(96.0, 32.0) };
+    let txt_size = 15.0;
 
-    // Undo/redo sunt valide doar cu coada goala si fara drag manual in curs.
+    // Undo/redo/solve sunt valide doar cu cubul asezat.
     let settled = queue.0.is_empty() && pointer.manual.is_none();
     let can_undo = settled && !history.0.is_empty();
     let can_redo = settled && !redo.0.is_empty();
+    let can_solve = settled && !solver_ctx.pending;
+    let can_rewind = settled && !history.0.is_empty();
 
     let mut do_scramble = false;
     let mut do_solve = false;
+    let mut do_rewind = false;
     let mut do_undo = false;
     let mut do_redo = false;
 
@@ -932,7 +1001,9 @@ fn egui_ui(
             let undo_txt = egui::RichText::new("⏴ UNDO").size(txt_size).color(egui::Color32::from_rgb(255, 214, 130));
             let redo_txt = egui::RichText::new("REDO ⏵").size(txt_size).color(egui::Color32::from_rgb(255, 214, 130));
             let scr_txt  = egui::RichText::new("🎲 SCRAMBLE").size(txt_size).color(egui::Color32::from_rgb(180, 180, 255));
-            let slv_txt  = egui::RichText::new("✔ SOLVE").size(txt_size).color(egui::Color32::from_rgb(150, 255, 180));
+            let slv_label = if solver_ctx.pending { "⏳ SOLVE" } else { "✨ SOLVE" };
+            let slv_txt  = egui::RichText::new(slv_label).size(txt_size).color(egui::Color32::from_rgb(150, 255, 180));
+            let rwd_txt  = egui::RichText::new("⏴⏴ REWIND").size(txt_size).color(egui::Color32::from_rgb(150, 220, 255));
 
             if compact {
                 ui.vertical(|ui| {
@@ -945,14 +1016,18 @@ fn egui_ui(
                     ui.horizontal(|ui| {
                         do_scramble = ui.add_sized(btn_size, egui::Button::new(scr_txt.clone())).clicked();
                         ui.add_space(8.0);
-                        do_solve = ui.add_sized(btn_size, egui::Button::new(slv_txt.clone())).clicked();
+                        do_solve = ui.add_enabled(can_solve, egui::Button::new(slv_txt.clone()).min_size(btn_size)).clicked();
+                        ui.add_space(8.0);
+                        do_rewind = ui.add_enabled(can_rewind, egui::Button::new(rwd_txt.clone()).min_size(btn_size)).clicked();
                     });
                 });
             } else {
                 ui.horizontal(|ui| {
                     do_scramble = ui.add_sized(btn_size, egui::Button::new(scr_txt)).clicked();
                     ui.add_space(8.0);
-                    do_solve = ui.add_sized(btn_size, egui::Button::new(slv_txt)).clicked();
+                    do_solve = ui.add_enabled(can_solve, egui::Button::new(slv_txt).min_size(btn_size)).clicked();
+                    ui.add_space(8.0);
+                    do_rewind = ui.add_enabled(can_rewind, egui::Button::new(rwd_txt).min_size(btn_size)).clicked();
                     ui.add_space(8.0);
                     do_undo = ui.add_enabled(can_undo, egui::Button::new(undo_txt).min_size(small_btn)).clicked();
                     ui.add_space(8.0);
@@ -964,28 +1039,24 @@ fn egui_ui(
     if do_scramble {
         queue.0.clear();
         redo.0.clear();
+        solver_ctx.pending = false;
         stats.phase = Phase::Scrambling;
         stats.moves = 0;
         let seed = (time.elapsed_seconds() * 100_000.0) as u64;
-        let mut rng = Rng::new(seed);
-        let moves = [
-            CubeMove::r(), CubeMove::ri(), CubeMove::l(), CubeMove::li(),
-            CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
-            CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
-        ];
-        // Fara aceeasi fata de doua ori la rand (mutarile s-ar anula/combina).
-        let mut last_layer: Option<(u8, i32)> = None;
-        let mut count = 0;
-        while count < 20 {
-            let mv = moves[rng.range(12)];
-            if last_layer == Some((mv.layer_axis, mv.layer_value)) { continue; }
-            last_layer = Some((mv.layer_axis, mv.layer_value));
+        for mv in generate_scramble(seed, 20) {
             queue.0.push_back((mv, true));
-            count += 1;
         }
     }
 
-    if do_solve && !history.0.is_empty() {
+    // SOLVE: solutie Kociemba (~20 de mutari) din orice stare; ruleaza in
+    // run_solver la frame-ul urmator.
+    if do_solve {
+        solver_ctx.pending = true;
+        stats.phase = Phase::Idle;
+    }
+
+    // REWIND: deruleaza istoricul invers — drumul "cubul se desface singur".
+    if do_rewind && !history.0.is_empty() {
         queue.0.clear();
         redo.0.clear();
         stats.phase = Phase::Idle;
@@ -1100,5 +1171,94 @@ fn setup(
                 }
             }
         }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn all_basic_moves() -> Vec<CubeMove> {
+        vec![
+            CubeMove::r(), CubeMove::ri(), CubeMove::l(), CubeMove::li(),
+            CubeMove::u(), CubeMove::ui(), CubeMove::d(), CubeMove::di(),
+            CubeMove::f(), CubeMove::fi(), CubeMove::b(), CubeMove::bi(),
+            CubeMove::m(), CubeMove::mi(), CubeMove::e(), CubeMove::ei(),
+            CubeMove::s(), CubeMove::si(),
+        ]
+    }
+
+    #[test]
+    fn move_codec_roundtrip() {
+        let mut moves = all_basic_moves();
+        // si mutari duble (±180°), cum produce drag-ul manual
+        moves.push(CubeMove { rotation_axis: Vec3::X, layer_axis: 0, layer_value: 1, angle: PI });
+        moves.push(CubeMove { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: 0, angle: -PI });
+
+        let decoded = decode_moves(&encode_moves(&moves)).expect("decode failed");
+        assert_eq!(decoded.len(), moves.len());
+        for (a, b) in moves.iter().zip(&decoded) {
+            assert_eq!(a.layer_axis, b.layer_axis);
+            assert_eq!(a.layer_value, b.layer_value);
+            assert!((a.angle - b.angle).abs() < 1e-6);
+            assert_eq!(a.rotation_axis, b.rotation_axis);
+        }
+    }
+
+    #[test]
+    fn decode_rejects_garbage() {
+        assert!(decode_moves("12").is_none(), "lungime gresita");
+        assert!(decode_moves("912").is_none(), "axa invalida");
+        assert!(decode_moves("092").is_none(), "strat invalid");
+        assert!(decode_moves("012").is_none(), "zero sferturi de tura");
+        assert!(decode_moves("abc").is_none(), "non-cifre");
+        assert!(decode_moves("").map(|v| v.is_empty()).unwrap_or(false), "sirul gol e istoric gol");
+    }
+
+    #[test]
+    fn four_quarter_turns_are_identity() {
+        for mv in all_basic_moves() {
+            let mut pos = (1, 1, 1);
+            for _ in 0..4 {
+                pos = rotate_grid_pos(pos.0, pos.1, pos.2, mv.rotation_axis, mv.angle);
+            }
+            assert_eq!(pos, (1, 1, 1), "mutarea {mv:?} nu are ordin 4");
+        }
+    }
+
+    #[test]
+    fn move_then_inverse_is_identity() {
+        for mv in all_basic_moves() {
+            let inv = mv.inverse();
+            for start in [(1, 1, 1), (1, 0, -1), (0, 1, -1), (-1, -1, -1)] {
+                let p = rotate_grid_pos(start.0, start.1, start.2, mv.rotation_axis, mv.angle);
+                let back = rotate_grid_pos(p.0, p.1, p.2, inv.rotation_axis, inv.angle);
+                assert_eq!(back, start, "inversul mutarii {mv:?} nu anuleaza");
+            }
+        }
+    }
+
+    #[test]
+    fn scramble_never_repeats_layer() {
+        for seed in [1_u64, 42, 0xDEAD, 987654321] {
+            let s = generate_scramble(seed, 20);
+            assert_eq!(s.len(), 20);
+            for w in s.windows(2) {
+                assert!(
+                    (w[0].layer_axis, w[0].layer_value) != (w[1].layer_axis, w[1].layer_value),
+                    "strat repetat consecutiv la seed {seed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fmt_time_formats() {
+        assert_eq!(fmt_time(5.0), "5.00s");
+        assert_eq!(fmt_time(12.345), "12.35s");
+        assert_eq!(fmt_time(65.43), "1:05.4");
+        assert_eq!(fmt_time(3600.0 / 60.0), "1:00.0");
     }
 }
