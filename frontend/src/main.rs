@@ -13,14 +13,14 @@ const CUBIE_SIZE: f32 = 0.92;
 const STICKER_SIZE: f32 = 0.78;
 const FACE_OFFSET: f32 = CUBIE_SIZE / 2.0 + 0.005;
 const ROTATION_DURATION: f32 = 0.18;
-// Cand asteapta multe mutari (scramble/solve), animatia accelereaza; cu cozi
-// foarte lungi (scramble de cub mare) merge si mai repede.
+// When many moves are queued (scramble/solve), the animation speeds up; with
+// very long queues (a big cube's scramble) it goes even faster.
 const ROTATION_DURATION_FAST: f32 = 0.07;
 const ROTATION_DURATION_TURBO: f32 = 0.03;
-// Zoom-ul acomodeaza tot spectrul de marimi (2x2 ... 20x20).
+// Zoom accommodates the full range of sizes (2x2 ... 20x20).
 const ZOOM_MIN: f32 = 2.5;
 const ZOOM_MAX: f32 = 120.0;
-// Drag live: prag de la care se alege stratul si sensibilitatea unghiului.
+// Live drag: threshold at which the layer is picked, and the angle sensitivity.
 const DRAG_LOCK_THRESHOLD: f32 = 10.0;
 const DRAG_ANGLE_PER_PIXEL: f32 = FRAC_PI_2 / 130.0;
 
@@ -81,12 +81,12 @@ fn camera_radius(n: i32) -> f32 {
     3.4 * n as f32
 }
 
-/// winit-web seteaza rezolutia fizica a ferestrei la dimensiunea CSS a
-/// canvas-ului (fara sa inmulteasca cu devicePixelRatio), asa ca pe ecrane
-/// high-DPI Bevy randeaza la rezolutie prea mica, iar egui plaseaza gresit
-/// pozitiile de pointer (butoanele nu raspund la touch). Corectam manual:
-/// rezolutie fizica = CSS x dpr, scale_factor = dpr. Astfel egui lucreaza in
-/// puncte = pixeli CSS, iar touch-ul si widget-urile se aliniaza.
+/// winit-web sets the window's physical resolution to the canvas's CSS size
+/// (without multiplying by devicePixelRatio), so on high-DPI screens Bevy
+/// renders at too low a resolution, and egui places pointer positions
+/// incorrectly (buttons don't respond to touch). We correct this manually:
+/// physical resolution = CSS x dpr, scale_factor = dpr. This way egui works in
+/// points = CSS pixels, and touch and widgets line up.
 #[cfg(target_arch = "wasm32")]
 fn sync_canvas_resolution(mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {
     let Some(win) = web_sys::window() else { return; };
@@ -116,14 +116,14 @@ fn sync_canvas_resolution(mut windows: Query<&mut Window, With<bevy::window::Pri
 #[cfg(not(target_arch = "wasm32"))]
 fn sync_canvas_resolution(_windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {}
 
-/// Umbrele de la point light se randeaza intr-un cubemap peste toti cubii;
-/// la cuburi mari (~mii de piese) devine prea scump, deci le oprim.
+/// Point light shadows render into a cubemap over all the cubies;
+/// for large cubes (~thousands of pieces) this gets too expensive, so we disable it.
 fn shadows_ok(n: i32) -> bool {
     n <= 7
 }
 
-/// Marcheaza lumina care arunca umbre, ca sa-i putem comuta shadows la
-/// schimbarea marimii cubului.
+/// Marks the light that casts shadows, so we can toggle shadows on it when
+/// the cube size changes.
 #[derive(Component)]
 struct ShadowLight;
 
@@ -153,15 +153,15 @@ enum DragKind {
     Face,
 }
 
-/// Rotatie de strat condusa de deget/mouse: stratul urmareste drag-ul in timp
-/// real si face snap la multiplu de 90° la ridicare.
+/// Layer rotation driven by finger/mouse: the layer follows the drag in real
+/// time and snaps to a multiple of 90° on release.
 struct ManualRotation {
     axis: Vec3,
     layer_axis: u8,
     layer_value: i32,
     entities: Vec<Entity>,
     initial_transforms: Vec<Transform>,
-    /// Directia pe ecran care corespunde unghiului pozitiv in jurul axei.
+    /// Screen direction that corresponds to a positive angle around the axis.
     tangent_screen: Vec2,
     angle: f32,
 }
@@ -179,7 +179,7 @@ fn apply_rotation_delta(state: &mut OrbitCamera, delta: Vec2) {
     state.rotation = state.rotation.normalize();
 }
 
-// Sistemele Bevy aduna firesc multe resurse; limita clippy nu ajuta aici.
+// Bevy systems naturally accumulate many resource params; clippy's limit doesn't help here.
 #[allow(clippy::too_many_arguments)]
 fn pointer_input(
     mut pointer: ResMut<PointerState>,
@@ -210,7 +210,7 @@ fn pointer_input(
     let Ok((camera, cam_transform)) = camera_q.get_single() else { return; };
     let Ok(window) = windows.get_single() else { return; };
 
-    // 2+ fingers → pinch zoom; rotatia manuala in curs face snap si se incheie.
+    // 2+ fingers → pinch zoom; any ongoing manual rotation snaps and ends.
     let touch_positions: Vec<Vec2> = touches.iter().map(|t| t.position()).collect();
     if touch_positions.len() >= 2 {
         finish_manual(&mut pointer, &mut active_rot, &mut history, &mut redo, &mut stats, time.elapsed_seconds_f64());
@@ -227,7 +227,7 @@ fn pointer_input(
     // Unified single pointer: touch wins over mouse when present.
     let touch_pos = touch_positions.first().copied();
 
-    // Pinch tocmai s-a incheiat: degetul ramas preia camera fara re-apasare.
+    // Pinch just ended: the remaining finger takes over the camera without a re-press.
     if pointer.prev_pinch_distance.take().is_some() {
         if let Some(p) = touch_pos {
             pointer.drag = Some(DragData { start_screen: p, kind: DragKind::Camera });
@@ -258,7 +258,7 @@ fn pointer_input(
     };
     let released = touch_ended || mouse_just_released;
 
-    // Start a new drag: sticker → rotatie de strat, altfel camera.
+    // Start a new drag: sticker → layer rotation, otherwise camera.
     if let Some(start_pos) = pressed_now {
         finish_manual(&mut pointer, &mut active_rot, &mut history, &mut redo, &mut stats, time.elapsed_seconds_f64());
         let kind = match raycast_cubie(camera, cam_transform, start_pos, &cubie_q) {
@@ -274,8 +274,8 @@ fn pointer_input(
         match drag.kind {
             DragKind::Camera => apply_rotation_delta(&mut cam_state, delta_now),
             DragKind::Face => {
-                // Alege stratul dupa un mic prag, doar cand nicio animatie nu
-                // ruleaza (stratul trebuie sa fie asezat ca sa-i capturam starea).
+                // Pick the layer after a small threshold, only when no animation
+                // is running (the layer must be settled so we can capture its state).
                 if pointer.manual.is_none() && active_rot.0.is_none() {
                     if let Some(now) = pos_now {
                         let total = now - start;
@@ -284,7 +284,7 @@ fn pointer_input(
                         }
                     }
                 }
-                // Stratul urmareste pointerul in timp real.
+                // The layer follows the pointer in real time.
                 if let Some(m) = pointer.manual.as_mut() {
                     if let Some(now) = pos_now {
                         m.angle = ((now - start).dot(m.tangent_screen) * DRAG_ANGLE_PER_PIXEL).clamp(-PI, PI);
@@ -307,8 +307,8 @@ fn pointer_input(
     }
 }
 
-/// Porneste o rotatie manuala: alege axa din planul fetei lovite care se
-/// aliniaza cel mai bine cu directia drag-ului si captureaza stratul.
+/// Starts a manual rotation: picks the axis from the hit face's plane that
+/// best aligns with the drag direction, and captures the layer.
 fn begin_manual(
     camera: &Camera,
     cam_transform: &GlobalTransform,
@@ -323,8 +323,8 @@ fn begin_manual(
 
     let mut best: Option<(f32, usize, Vec2)> = None;
     for (i, axis) in axes.iter().enumerate() {
-        // Ca la cubul fizic: un drag pe o fata actioneaza doar straturile din
-        // planul ei, nu rotatia in jurul normalei (aia se face din fetele vecine).
+        // Like a physical cube: a drag on a face only drives the layers in
+        // its plane, not rotation around its normal (that's done from neighboring faces).
         if axis.dot(normal).abs() > 0.5 { continue; }
         let tangent_world = axis.cross(hit_world);
         if tangent_world.length_squared() < 1e-4 { continue; }
@@ -360,8 +360,8 @@ fn begin_manual(
     })
 }
 
-/// Incheie rotatia manuala: snap la cel mai apropiat multiplu de 90°, animat
-/// din unghiul curent; mutarea rezultata (daca nu e nula) intra in history.
+/// Ends the manual rotation: snaps to the nearest multiple of 90°, animated
+/// from the current angle; the resulting move (if not a no-op) goes into history.
 fn finish_manual(
     pointer: &mut PointerState,
     active_rot: &mut ActiveRotation,
@@ -472,18 +472,18 @@ fn camera_zoom(
 
 // ── Cube moves ────────────────────────────────────────────────────────────────
 
-/// Grila foloseste "coordonate dublate" (pas 2), ca si cuburile pare (2x2,
-/// 4x4) sa aiba pozitii intregi: n=3 → straturi -2,0,2; n=4 → -3,-1,1,3.
-/// Stratul exterior are valoarea `max_c = n - 1`; world = grila * 0.5.
+/// The grid uses "doubled coordinates" (step 2), so even-sized cubes (2x2,
+/// 4x4) also have integer positions: n=3 → layers -2,0,2; n=4 → -3,-1,1,3.
+/// The outer layer has value `max_c = n - 1`; world = grid * 0.5.
 fn max_coord(n: i32) -> i32 {
     n - 1
 }
 
-/// Marimea cubului (n x n x n), 2..=20.
+/// Cube size (n x n x n), 2..=20.
 #[derive(Resource)]
 pub struct CubeSize(pub i32);
 
-/// layer_value sentinel: mutarea roteste toate straturile (x/y/z, cub intreg).
+/// layer_value sentinel: the move rotates all layers (x/y/z, whole cube).
 pub const LAYER_ALL: i32 = 99;
 
 #[derive(Clone, Copy, Debug)]
@@ -495,7 +495,7 @@ pub struct CubeMove {
 }
 
 impl CubeMove {
-    // Fete exterioare; `max` = coordonata dublata a stratului exterior.
+    // Outer faces; `max` = doubled coordinate of the outer layer.
     fn r(max: i32)  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value:  max, angle: -FRAC_PI_2 } }
     fn ri(max: i32) -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value:  max, angle:  FRAC_PI_2 } }
     fn l(max: i32)  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: -max, angle:  FRAC_PI_2 } }
@@ -509,18 +509,18 @@ impl CubeMove {
     fn b(max: i32)  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: -max, angle:  FRAC_PI_2 } }
     fn bi(max: i32) -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: -max, angle: -FRAC_PI_2 } }
 
-    // Felii din mijloc (doar cuburi impare)
-    // M: Middle, aceeasi directie ca L (+X)
+    // Middle slices (odd-sized cubes only)
+    // M: Middle, same direction as L (+X)
     fn m()  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: 0, angle:  FRAC_PI_2 } }
     fn mi() -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: 0, angle: -FRAC_PI_2 } }
-    // E: Equator, aceeasi directie ca D (+Y)
+    // E: Equator, same direction as D (+Y)
     fn e()  -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: 0, angle:  FRAC_PI_2 } }
     fn ei() -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: 0, angle: -FRAC_PI_2 } }
-    // S: Standing, aceeasi directie ca F (-Z)
+    // S: Standing, same direction as F (-Z)
     fn s()  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: 0, angle: -FRAC_PI_2 } }
     fn si() -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: 0, angle:  FRAC_PI_2 } }
 
-    // Rotatii de cub intreg (notatia x/y/z): ca R/U/F dar pe toate straturile.
+    // Whole-cube rotations (x/y/z notation): like R/U/F but on all layers.
     fn x()  -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: LAYER_ALL, angle: -FRAC_PI_2 } }
     fn xi() -> Self { Self { rotation_axis: Vec3::X, layer_axis: 0, layer_value: LAYER_ALL, angle:  FRAC_PI_2 } }
     fn y()  -> Self { Self { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: LAYER_ALL, angle: -FRAC_PI_2 } }
@@ -528,7 +528,7 @@ impl CubeMove {
     fn z()  -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: LAYER_ALL, angle: -FRAC_PI_2 } }
     fn zi() -> Self { Self { rotation_axis: Vec3::Z, layer_axis: 2, layer_value: LAYER_ALL, angle:  FRAC_PI_2 } }
 
-    /// Cubie-ul cu valoarea `layer_val` pe axa mutarii participa la rotatie?
+    /// Does the cubie with value `layer_val` on the move's axis take part in the rotation?
     fn affects(&self, layer_val: i32) -> bool {
         self.layer_value == LAYER_ALL || layer_val == self.layer_value
     }
@@ -538,28 +538,28 @@ impl CubeMove {
     }
 }
 
-/// Coada de mutari; bool = se inregistreaza in history la executie.
-/// Mutarile din Solve nu se inregistreaza, altfel "rezolvarea" s-ar anula singura.
+/// Move queue; bool = record into history on execution.
+/// Moves from Solve aren't recorded, otherwise the "solve" would cancel itself out.
 #[derive(Resource, Default)]
 pub struct MoveQueue(pub VecDeque<(CubeMove, bool)>);
 
 #[derive(Resource, Default)]
 pub struct MoveHistory(pub Vec<CubeMove>);
 
-/// Mutari anulate cu Undo, gata de re-executat. Orice mutare noua il goleste.
+/// Moves undone with Undo, ready to be re-executed. Any new move clears it.
 #[derive(Resource, Default)]
 pub struct RedoStack(pub Vec<CubeMove>);
 
-// ── Game stats (cronometru + contor) ─────────────────────────────────────────
+// ── Game stats (timer + move counter) ─────────────────────────────────────────
 
 #[derive(Default, Clone, Copy)]
 enum Phase {
-    /// Joaca libera: fara cronometru.
+    /// Free play: no timer.
     #[default]
     Idle,
-    /// Scramble-ul se executa; mutarile lui nu se numara.
+    /// The scramble is running; its moves aren't counted.
     Scrambling,
-    /// Scramble terminat; cronometrul porneste la prima mutare.
+    /// Scramble finished; the timer starts on the first move.
     Ready,
     Running,
     Solved { time: f64, is_best: bool },
@@ -599,21 +599,21 @@ pub struct RotationState {
     pub duration: f32,
     pub entities: Vec<Entity>,
     pub initial_transforms: Vec<Transform>,
-    /// Unghiul de pornire — nenul cand animatia continua un drag manual.
+    /// Starting angle — nonzero when the animation continues a manual drag.
     pub start_angle: f32,
 }
 
 #[derive(Resource, Default)]
 pub struct ActiveRotation(pub Option<RotationState>);
 
-// ── Persistenta (localStorage) ────────────────────────────────────────────────
+// ── Persistence (localStorage) ────────────────────────────────────────────────
 
-// Chei .v3: codec-ul are acum stratul pe 2 cifre (cuburi pana la 20x20).
+// .v3 keys: the codec now encodes the layer with 2 digits (cubes up to 20x20).
 const STORE_HISTORY: &str = "cube.v3.history";
 const STORE_REDO: &str = "cube.v3.redo";
 const STORE_SIZE: &str = "cube.v3.size";
 
-/// Recordul se tine separat pe fiecare marime de cub.
+/// The best time is kept separately for each cube size.
 fn store_best_key(n: i32) -> String {
     format!("cube.v3.best.{n}")
 }
@@ -643,8 +643,8 @@ fn storage_get(_key: &str) -> Option<String> {
     None
 }
 
-/// O mutare = 4 cifre: axa (0-2), stratul in coordonate dublate pe 2 cifre
-/// (+40 → 21..59 pentru -19..19; "99" = tot cubul), sferturi de tura (+2).
+/// A move = 4 digits: axis (0-2), the layer in doubled coordinates on 2 digits
+/// (+40 → 21..59 for -19..19; "99" = whole cube), quarter turns (+2).
 fn encode_moves(moves: &[CubeMove]) -> String {
     moves
         .iter()
@@ -686,8 +686,8 @@ fn decode_moves(s: &str) -> Option<Vec<CubeMove>> {
         .collect()
 }
 
-/// La pornire: reconstruieste cubul aplicand instant istoricul salvat, ca un
-/// refresh sa nu piarda nici starea si nici capacitatea Solve-ului de a o desface.
+/// On startup: rebuilds the cube by instantly applying the saved history, so a
+/// refresh loses neither the state nor Solve's ability to undo it.
 fn restore_state(
     size: Res<CubeSize>,
     mut history: ResMut<MoveHistory>,
@@ -708,8 +708,8 @@ fn restore_state(
     history.0 = moves;
 }
 
-/// Aplica o mutare fara animatie: permuta grila si compune orientarile,
-/// exact ca finalize-ul din process_rotation.
+/// Applies a move without animation: permutes the grid and composes orientations,
+/// exactly like process_rotation's finalize step.
 fn apply_move_instant(cubies: &mut Query<(&mut GridPos, &mut Transform)>, mv: &CubeMove) {
     let q = Quat::from_axis_angle(mv.rotation_axis, mv.angle);
     for (mut gp, mut tf) in cubies.iter_mut() {
@@ -722,11 +722,11 @@ fn apply_move_instant(cubies: &mut Query<(&mut GridPos, &mut Transform)>, mv: &C
     }
 }
 
-/// Executa setup-ul cerut din fereastra trainer-ului: readuce cubul la
-/// rezolvat (inversul istoricului, instant), apoi aplica inversul
-/// algoritmului ales — executarea algoritmului rezolva garantat cubul.
-/// Mutarile de setup intra in history, ca starea sa ramana consistenta cu
-/// persistenta si cu REWIND.
+/// Executes the setup requested from the trainer window: brings the cube back
+/// to solved (the inverse of the history, instantly), then applies the inverse
+/// of the chosen algorithm — executing the algorithm is guaranteed to solve the cube.
+/// The setup moves go into history, so the state stays consistent with
+/// persistence and with REWIND.
 #[allow(clippy::too_many_arguments)]
 fn apply_trainer_setup(
     mut tr: ResMut<Trainer>,
@@ -742,7 +742,7 @@ fn apply_trainer_setup(
 ) {
     let Some(case) = tr.pending else { return; };
 
-    // Trainer-ul e pentru 3x3: comuta si asteapta rebuild-ul.
+    // The trainer is for 3x3: switch to it and wait for the rebuild.
     if size.0 != 3 {
         size.0 = 3;
         return;
@@ -762,11 +762,11 @@ fn apply_trainer_setup(
     history.0.clear();
     redo.0.clear();
 
-    let alg = trainer::parse_alg(trainer::ALGS[case].moves).expect("algoritm valid (verificat in teste)");
+    let alg = trainer::parse_alg(trainer::ALGS[case].moves).expect("valid algorithm (checked in tests)");
     let mut setup = trainer::inverse_alg(&alg);
     if tr.random_auf {
-        // Un U aleator inainte de caz, ca recunoasterea sa nu fie mereu
-        // din acelasi unghi.
+        // A random U before the case, so recognition isn't always
+        // from the same angle.
         let quarters = [-FRAC_PI_2, -PI, FRAC_PI_2][(time.elapsed_seconds() * 977.0) as usize % 3];
         setup.push(CubeMove {
             rotation_axis: Vec3::Y,
@@ -798,7 +798,7 @@ fn collect_cubies(cubies: &Query<(&GridPos, &Transform)>) -> Vec<(IVec3, Quat)> 
         .collect()
 }
 
-/// Pozitiile in unitati simple (-1..1), cum le asteapta solver-ul 3x3.
+/// Positions in plain units (-1..1), as expected by the 3x3 solver.
 fn collect_cubies_for_solver(cubies: &Query<(&GridPos, &Transform)>) -> Vec<(IVec3, Quat)> {
     cubies
         .iter()
@@ -806,9 +806,9 @@ fn collect_cubies_for_solver(cubies: &Query<(&GridPos, &Transform)>) -> Vec<(IVe
         .collect()
 }
 
-/// Tranzitiile de faza care depind de "cubul s-a asezat": scramble terminat si
-/// detectarea starii rezolvate. Detectia foloseste facelets (fete uniforme),
-/// nu compararea orientarilor — centrele se pot rasuci invizibil pe loc.
+/// Phase transitions that depend on "the cube has settled": scramble finished and
+/// solved-state detection. Detection uses facelets (uniform faces),
+/// not orientation comparison — centers can twist invisibly in place.
 fn update_game_phase(
     queue: Res<MoveQueue>,
     active: Res<ActiveRotation>,
@@ -836,9 +836,9 @@ fn update_game_phase(
     }
 }
 
-/// Executa rezolvarea Kociemba ceruta de butonul SOLVE. Ruleaza la un frame
-/// dupa click (UI-ul apuca sa arate starea de lucru), asteapta cubul asezat,
-/// si genereaza tabelele la prima folosire.
+/// Runs the Kociemba solve requested by the SOLVE button. Runs one frame
+/// after the click (so the UI gets a chance to show the working state), waits for the
+/// cube to settle, and generates the tables on first use.
 #[allow(clippy::too_many_arguments)]
 fn run_solver(
     mut ctx: ResMut<SolverContext>,
@@ -851,8 +851,8 @@ fn run_solver(
     cubies: Query<(&GridPos, &Transform)>,
 ) {
     if !ctx.pending { return; }
-    // Kociemba e strict pentru 3x3; butonul e dezactivat altfel, dar pastram
-    // si garda, in caz ca dimensiunea se schimba cu pending setat.
+    // Kociemba is strictly for 3x3; the button is disabled otherwise, but we keep
+    // this guard too, in case the size changes while pending is set.
     if size.0 != 3 {
         ctx.pending = false;
         return;
@@ -861,19 +861,19 @@ fn run_solver(
     if !settled { return; }
 
     if ctx.table.is_none() {
-        // Generarea dureaza ~1-2s pe wasm; ramanem pending inca un frame ca
-        // eticheta "se pregateste" sa fie deja pe ecran in timpul blocarii.
+        // Generation takes ~1-2s on wasm; we stay pending for one more frame so the
+        // "preparing" label is already on screen during the blocking work.
         ctx.table = Some(kewb::DataTable::default());
         return;
     }
     ctx.pending = false;
 
     let Some(moves) = solver::solve_scene(ctx.table.as_ref().unwrap(), &collect_cubies_for_solver(&cubies)) else {
-        warn!("solver: starea cubului nu a putut fi citita");
+        warn!("solver: cube state couldn't be read");
         return;
     };
-    // Solutia readuce cubul la rezolvat: istoricul vechi nu mai descrie
-    // drumul inapoi, deci se goleste.
+    // The solution brings the cube back to solved: the old history no longer
+    // describes the way back, so it's cleared.
     history.0.clear();
     redo.0.clear();
     queue.0.extend(moves.into_iter().map(|m| (m, false)));
@@ -903,7 +903,7 @@ fn keyboard_input(
     size: Res<CubeSize>,
     mut egui_ctx: EguiContexts,
 ) {
-    // Nu captura taste daca egui are focus
+    // Don't capture keys if egui has focus
     if egui_ctx.ctx_mut().wants_keyboard_input() { return; }
 
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -911,8 +911,8 @@ fn keyboard_input(
         || keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
 
     if ctrl {
-        // Undo/redo doar cu coada goala: inversarea unei mutari inca neexecutate
-        // ar aplica mutarile in ordinea gresita.
+        // Undo/redo only with an empty queue: reversing a move that hasn't
+        // executed yet would apply the moves in the wrong order.
         if keys.just_pressed(KeyCode::KeyZ) && queue.0.is_empty() && pointer.manual.is_none() {
             if shift {
                 redo_move(&mut redo, &mut queue);
@@ -932,11 +932,11 @@ fn keyboard_input(
         (KeyCode::KeyD, CubeMove::d(max),  CubeMove::di(max), true),
         (KeyCode::KeyF, CubeMove::f(max),  CubeMove::fi(max), true),
         (KeyCode::KeyB, CubeMove::b(max),  CubeMove::bi(max), true),
-        // Feliile din mijloc exista doar la cuburile impare.
+        // Middle slices only exist on odd-sized cubes.
         (KeyCode::KeyM, CubeMove::m(),  CubeMove::mi(), odd),
         (KeyCode::KeyE, CubeMove::e(),  CubeMove::ei(), odd),
         (KeyCode::KeyS, CubeMove::s(),  CubeMove::si(), odd),
-        // Rotatii de cub intreg.
+        // Whole-cube rotations.
         (KeyCode::KeyX, CubeMove::x(),  CubeMove::xi(), true),
         (KeyCode::KeyY, CubeMove::y(),  CubeMove::yi(), true),
         (KeyCode::KeyZ, CubeMove::z(),  CubeMove::zi(), true),
@@ -1013,10 +1013,10 @@ fn process_rotation(
             }
         }
     } else if active.0.is_none() && pointer.manual.is_none() {
-        // Coada asteapta cat timp un strat e tinut in mana (drag manual).
+        // The queue waits while a layer is being held (manual drag).
         if let Some((mv, record)) = move_queue.0.pop_front() {
-            // History reflecta doar mutari executate: push abia la pornirea rotatiei,
-            // ca Solve/Scramble apasate in timpul animatiilor sa nu-l corupa.
+            // History only reflects executed moves: push only when the rotation
+            // starts, so Solve/Scramble pressed during animations doesn't corrupt it.
             if record {
                 history.0.push(mv);
                 note_recorded_move(&mut stats, time.elapsed_seconds_f64());
@@ -1061,9 +1061,9 @@ impl Rng {
     fn range(&mut self, n: usize) -> usize { (self.next() as usize) % n }
 }
 
-/// Scramble aleator pe orice strat al cubului n x n, fara acelasi strat de
-/// doua ori la rand (mutarile consecutive pe acelasi strat se anuleaza sau se
-/// combina). Pentru cuburile pare stratul 0 nu exista.
+/// Random scramble across any layer of the n x n cube, never repeating the
+/// same layer twice in a row (consecutive moves on the same layer cancel out or
+/// combine). For even-sized cubes, layer 0 doesn't exist.
 fn generate_scramble(seed: u64, count: usize, n: i32) -> Vec<CubeMove> {
     let max = max_coord(n);
     let mut rng = Rng::new(seed);
@@ -1088,8 +1088,8 @@ fn generate_scramble(seed: u64, count: usize, n: i32) -> Vec<CubeMove> {
     out
 }
 
-/// Lungimea de scramble potrivita marimii cubului: creste cu numarul de
-/// straturi (~10 mutari per strat), plafonat ca sa nu dureze o vesnicie.
+/// Scramble length appropriate to the cube size: grows with the number of
+/// layers (~10 moves per layer), capped so it doesn't take forever.
 fn scramble_len(n: i32) -> usize {
     match n {
         2 => 10,
@@ -1116,8 +1116,8 @@ fn egui_ui(
     let ctx = contexts.ctx_mut();
     let compact = ctx.screen_rect().width() < 700.0;
 
-    // Selector de marime — sus-stanga pe mobil (dreapta pe desktop), ca sa nu
-    // se suprapuna cu textul de hint centrat.
+    // Size selector — top-left on mobile (top-right on desktop), so it doesn't
+    // overlap the centered hint text.
     let size_anchor = if compact { egui::Align2::LEFT_TOP } else { egui::Align2::RIGHT_TOP };
     let size_offset = if compact { egui::vec2(8.0, 8.0) } else { egui::vec2(-10.0, 10.0) };
     egui::Area::new("size_select".into())
@@ -1139,7 +1139,7 @@ fn egui_ui(
             });
         });
 
-    // Trainer de algoritmi — sus-dreapta pe mobil (langa selector), sub el pe desktop.
+    // Algorithm trainer — top-right on mobile (next to the selector), below it on desktop.
     let tr_offset = if compact { egui::vec2(-8.0, 8.0) } else { egui::vec2(-10.0, 48.0) };
     egui::Area::new("trainer_toggle".into())
         .anchor(egui::Align2::RIGHT_TOP, tr_offset)
@@ -1205,7 +1205,7 @@ fn egui_ui(
         tr.open = open;
     }
 
-    // 1. HUD cronometru + contor. Are prioritate peste hint pe locul de sus.
+    // 1. HUD timer + move counter. Takes priority over the hint in the top spot.
     let case_tag = tr.current.map(|i| format!("{}  ·  ", trainer::ALGS[i].name)).unwrap_or_default();
     let hud_text = match stats.phase {
         Phase::Ready => Some(format!("{case_tag}⏱ cronometrul porneste la prima mutare")),
@@ -1230,8 +1230,8 @@ fn egui_ui(
             });
     }
 
-    // 2. Hint-uri de gesturi. Pe mobil, sub randul de control de sus, si doar
-    // cand HUD-ul nu ocupa deja locul.
+    // 2. Gesture hints. On mobile, below the top control row, and only
+    // when the HUD isn't already occupying that spot.
     if compact {
         if !hud_visible {
             egui::Area::new("hints".into())
@@ -1260,7 +1260,7 @@ fn egui_ui(
             });
     }
 
-    // 3. Celebrare la rezolvare.
+    // 3. Solve celebration.
     if let Phase::Solved { time: solve_time, is_best } = stats.phase {
         egui::Area::new("solved".into())
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -20.0))
@@ -1290,7 +1290,7 @@ fn egui_ui(
             });
     }
 
-    // 4. Panou butoane: jos-centrat pe mobil (tinte de atins mari), sus-stanga pe desktop.
+    // 4. Button panel: bottom-centered on mobile (large touch targets), top-left on desktop.
     let (anchor, offset) = if compact {
         (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
     } else {
@@ -1300,12 +1300,12 @@ fn egui_ui(
     let small_btn = if compact { egui::vec2(150.0, 44.0) } else { egui::vec2(96.0, 32.0) };
     let txt_size = 15.0;
 
-    // Undo/redo/solve sunt valide doar cu cubul asezat.
+    // Undo/redo/solve are only valid once the cube has settled.
     let settled = queue.0.is_empty() && pointer.manual.is_none();
     let can_undo = settled && !history.0.is_empty();
     let can_redo = settled && !redo.0.is_empty();
-    // SOLVE merge la orice marime: pe 3x3 rezolva din orice stare (Kociemba),
-    // pe NxN deruleaza istoricul (deci are nevoie de istoric).
+    // SOLVE works at any size: on 3x3 it solves from any state (Kociemba),
+    // on NxN it rewinds the history (so it needs history to exist).
     let can_solve = settled && !solver_ctx.pending && (size.0 == 3 || !history.0.is_empty());
     let can_rewind = settled && !history.0.is_empty();
 
@@ -1368,15 +1368,15 @@ fn egui_ui(
         }
     }
 
-    // SOLVE pe 3x3: solutie Kociemba (~20 de mutari, din orice stare); ruleaza
-    // in run_solver la frame-ul urmator.
+    // SOLVE on 3x3: Kociemba solution (~20 moves, from any state); runs
+    // in run_solver on the next frame.
     if do_solve && size.0 == 3 {
         solver_ctx.pending = true;
         stats.phase = Phase::Idle;
     }
 
-    // REWIND (orice marime) sau SOLVE pe NxN (unde nu exista solver): deruleaza
-    // istoricul invers — drumul "cubul se desface singur".
+    // REWIND (any size) or SOLVE on NxN (where there's no solver): plays the
+    // history back in reverse — the "cube undoes itself" path.
     let replay = do_rewind || (do_solve && size.0 != 3);
     if replay && !history.0.is_empty() {
         queue.0.clear();
@@ -1450,8 +1450,8 @@ fn setup(
     spawn_cube(&mut commands, &mut meshes, &mut materials, size.0);
 }
 
-/// Construieste cubul n x n: doar cubie-urile de la suprafata, in coordonate
-/// dublate (pas 2), cu stickere pe fetele exterioare.
+/// Builds the n x n cube: only the surface cubies, in doubled
+/// coordinates (step 2), with stickers on the outer faces.
 fn spawn_cube(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -1490,7 +1490,7 @@ fn spawn_cube(
     for x in (-max..=max).step_by(2) {
         for y in (-max..=max).step_by(2) {
             for z in (-max..=max).step_by(2) {
-                // Interiorul nu se vede niciodata.
+                // The interior is never visible.
                 if x.abs() != max && y.abs() != max && z.abs() != max { continue; }
 
                 let cubie_id = commands.spawn((
@@ -1518,7 +1518,7 @@ fn spawn_cube(
     }
 }
 
-/// La schimbarea marimii din UI: reconstruieste scena si reseteaza sesiunea.
+/// When the size changes from the UI: rebuilds the scene and resets the session.
 #[allow(clippy::too_many_arguments)]
 fn rebuild_cube(
     size: Res<CubeSize>,
@@ -1583,8 +1583,8 @@ mod tests {
     #[test]
     fn move_codec_roundtrip() {
         let mut moves = all_basic_moves();
-        // straturi interioare de 5x5 si mutari duble (±180°), cum produce
-        // drag-ul manual
+        // inner layers of a 5x5 and double moves (±180°), as produced by
+        // manual dragging
         moves.push(CubeMove { rotation_axis: Vec3::X, layer_axis: 0, layer_value: -4, angle: PI });
         moves.push(CubeMove { rotation_axis: Vec3::X, layer_axis: 0, layer_value: 3, angle: PI });
         moves.push(CubeMove { rotation_axis: Vec3::Y, layer_axis: 1, layer_value: 0, angle: -PI });
@@ -1601,11 +1601,11 @@ mod tests {
 
     #[test]
     fn decode_rejects_garbage() {
-        assert!(decode_moves("12").is_none(), "lungime gresita");
-        assert!(decode_moves("912").is_none(), "axa invalida");
-        assert!(decode_moves("092").is_none(), "zero sferturi de tura");
-        assert!(decode_moves("abc").is_none(), "non-cifre");
-        assert!(decode_moves("").map(|v| v.is_empty()).unwrap_or(false), "sirul gol e istoric gol");
+        assert!(decode_moves("12").is_none(), "wrong length");
+        assert!(decode_moves("912").is_none(), "invalid axis");
+        assert!(decode_moves("092").is_none(), "zero quarter turns");
+        assert!(decode_moves("abc").is_none(), "non-digits");
+        assert!(decode_moves("").map(|v| v.is_empty()).unwrap_or(false), "an empty string is an empty history");
     }
 
     #[test]
@@ -1615,7 +1615,7 @@ mod tests {
             for _ in 0..4 {
                 pos = rotate_grid_pos(pos.0, pos.1, pos.2, mv.rotation_axis, mv.angle);
             }
-            assert_eq!(pos, (2, 2, 2), "mutarea {mv:?} nu are ordin 4");
+            assert_eq!(pos, (2, 2, 2), "move {mv:?} doesn't have order 4");
         }
     }
 
@@ -1626,7 +1626,7 @@ mod tests {
             for start in [(2, 2, 2), (2, 0, -2), (0, 2, -2), (-2, -2, -2), (3, -1, 1)] {
                 let p = rotate_grid_pos(start.0, start.1, start.2, mv.rotation_axis, mv.angle);
                 let back = rotate_grid_pos(p.0, p.1, p.2, inv.rotation_axis, inv.angle);
-                assert_eq!(back, start, "inversul mutarii {mv:?} nu anuleaza");
+                assert_eq!(back, start, "the inverse of move {mv:?} doesn't cancel it out");
             }
         }
     }
@@ -1639,16 +1639,16 @@ mod tests {
                 let s = generate_scramble(seed, scramble_len(n), n);
                 assert_eq!(s.len(), scramble_len(n));
                 for mv in &s {
-                    assert!(mv.layer_value.abs() <= max, "{n}x{n}: strat inexistent");
+                    assert!(mv.layer_value.abs() <= max, "{n}x{n}: nonexistent layer");
                     assert_eq!(
                         (mv.layer_value - max).rem_euclid(2), 0,
-                        "{n}x{n}: paritate gresita a stratului"
+                        "{n}x{n}: wrong layer parity"
                     );
                 }
                 for w in s.windows(2) {
                     assert!(
                         (w[0].layer_axis, w[0].layer_value) != (w[1].layer_axis, w[1].layer_value),
-                        "strat repetat consecutiv la seed {seed}"
+                        "consecutive repeated layer at seed {seed}"
                     );
                 }
             }

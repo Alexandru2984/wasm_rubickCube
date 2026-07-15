@@ -1,9 +1,9 @@
-//! Trainer de algoritmi OLL/PLL (3x3).
+//! OLL/PLL algorithm trainer (3x3).
 //!
-//! Design "setup prin invers": cubul se aseaza in starea `alg⁻¹(rezolvat)`,
-//! deci executarea algoritmului il rezolva garantat — corectitudinea drill-ului
-//! nu depinde de etichete. Testele verifica structural fiecare algoritm:
-//! pastreaza F2L (primele doua straturi + centrele) si apartine categoriei.
+//! "Setup by inverse" design: the cube is placed into the state `alg⁻¹(solved)`,
+//! so executing the algorithm is guaranteed to solve it — drill correctness
+//! doesn't depend on labels. Tests verify each algorithm structurally:
+//! it preserves F2L (first two layers + centers) and matches its category.
 
 use crate::{CubeMove, LAYER_ALL};
 use bevy::prelude::*;
@@ -25,16 +25,16 @@ pub struct Alg {
 pub struct Trainer {
     pub open: bool,
     pub random_auf: bool,
-    /// Cazul curent (index in ALGS) — afisat in HUD si fereastra.
+    /// Current case (index into ALGS) — shown in the HUD and window.
     pub current: Option<usize>,
-    /// Caz ales, de aplicat cand scena e asezata (si pe 3x3).
+    /// Chosen case, to apply once the scene is settled (and on a 3x3).
     pub pending: Option<usize>,
 }
 
-/// Parseaza notatia standard: fete (R U F...), felii (M E S), rotatii (x y z),
-/// wide moves (r u f... = fata + felia adiacenta), sufixe ' si 2.
+/// Parses standard notation: faces (R U F...), slices (M E S), rotations (x y z),
+/// wide moves (r u f... = face + adjacent slice), ' and 2 suffixes.
 pub fn parse_alg(s: &str) -> Option<Vec<CubeMove>> {
-    let max = 2; // 3x3 in coordonate dublate
+    let max = 2; // 3x3 in doubled coordinates
 
     let face = |axis: Vec3, layer_axis: u8, layer: i32, cw_sign: f32| CubeMove {
         rotation_axis: axis,
@@ -55,7 +55,7 @@ pub fn parse_alg(s: &str) -> Option<Vec<CubeMove>> {
             _ => return None,
         };
 
-        // (mutare de baza, felia atasata pentru wide)
+        // (base move, attached slice for wide moves)
         let (main, wide): (CubeMove, Option<CubeMove>) = match base {
             'R' => (face(Vec3::X, 0, max, -1.0), None),
             'L' => (face(Vec3::X, 0, -max, 1.0), None),
@@ -69,7 +69,7 @@ pub fn parse_alg(s: &str) -> Option<Vec<CubeMove>> {
             'x' => (face(Vec3::X, 0, LAYER_ALL, -1.0), None),
             'y' => (face(Vec3::Y, 1, LAYER_ALL, -1.0), None),
             'z' => (face(Vec3::Z, 2, LAYER_ALL, -1.0), None),
-            // wide: fata + felia din mijloc care se misca odata cu ea
+            // wide: face + the middle slice that moves along with it
             'r' => (face(Vec3::X, 0, max, -1.0), Some(face(Vec3::X, 0, 0, -1.0))),
             'l' => (face(Vec3::X, 0, -max, 1.0), Some(face(Vec3::X, 0, 0, 1.0))),
             'u' => (face(Vec3::Y, 1, max, -1.0), Some(face(Vec3::Y, 1, 0, -1.0))),
@@ -86,7 +86,7 @@ pub fn parse_alg(s: &str) -> Option<Vec<CubeMove>> {
             }
             if double {
                 mv.angle *= 2.0;
-                // ±180° sunt echivalente; pastram unghiul in [-PI, PI]
+                // ±180° are equivalent; keep the angle within [-PI, PI]
                 if mv.angle > PI + 1e-3 || mv.angle < -PI - 1e-3 {
                     return None;
                 }
@@ -97,7 +97,7 @@ pub fn parse_alg(s: &str) -> Option<Vec<CubeMove>> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-/// Inversul unui algoritm: mutarile inversate, in ordine inversa.
+/// Inverse of an algorithm: the moves inverted, in reverse order.
 pub fn inverse_alg(moves: &[CubeMove]) -> Vec<CubeMove> {
     moves.iter().rev().map(|m| m.inverse()).collect()
 }
@@ -229,10 +229,10 @@ mod tests {
         scene_to_facelets(&halved).expect("facelets")
     }
 
-    /// Indecsii care nu apartin ultimului strat (F2L + centrele laterale + D).
+    /// Indices that don't belong to the last layer (F2L + side centers + D).
     fn f2l_indices() -> Vec<usize> {
         let last_layer: Vec<usize> = (0..9)
-            .chain(9..12)   // randul de sus al fetei R
+            .chain(9..12)   // top row of the R face
             .chain(18..21)  // F
             .chain(36..39)  // L
             .chain(45..48)  // B
@@ -244,7 +244,7 @@ mod tests {
     fn all_algs_parse() {
         for alg in ALGS {
             let moves = parse_alg(alg.moves)
-                .unwrap_or_else(|| panic!("algoritmul {} nu se parseaza", alg.name));
+                .unwrap_or_else(|| panic!("algorithm {} doesn't parse", alg.name));
             assert!(!moves.is_empty());
         }
     }
@@ -256,11 +256,11 @@ mod tests {
             let mut scene = solved_scene();
             apply(&mut scene, &moves);
             apply(&mut scene, &inverse_alg(&moves));
-            assert_eq!(facelets(&scene), SOLVED, "{}: alg + invers ≠ identitate", alg.name);
+            assert_eq!(facelets(&scene), SOLVED, "{}: alg + inverse ≠ identity", alg.name);
         }
     }
 
-    /// Orice algoritm de last layer trebuie sa lase F2L neatins.
+    /// Any last-layer algorithm must leave F2L untouched.
     #[test]
     fn all_algs_preserve_f2l() {
         let solved: Vec<char> = SOLVED.chars().collect();
@@ -272,15 +272,15 @@ mod tests {
             for &i in &f2l_indices() {
                 assert_eq!(
                     after[i], solved[i],
-                    "{}: strica F2L la facelet {i}", alg.name
+                    "{}: breaks F2L at facelet {i}", alg.name
                 );
             }
         }
     }
 
-    /// PLL: aplicat pe rezolvat, lasa fata de sus uniforma (doar permuta) si
-    /// nu e identitate. OLL: inversul (starea de caz) are fata de sus
-    /// ne-uniforma (e un caz de orientare).
+    /// PLL: applied to a solved cube, leaves the top face uniform (permutes only)
+    /// and isn't the identity. OLL: the inverse (the case's starting state) has a
+    /// non-uniform top face (it's an orientation case).
     #[test]
     fn algs_match_their_category() {
         for alg in ALGS {
@@ -293,9 +293,9 @@ mod tests {
                     let top: Vec<char> = f.chars().take(9).collect();
                     assert!(
                         top.iter().all(|&c| c == top[0]),
-                        "{}: PLL cu fata de sus ne-uniforma", alg.name
+                        "{}: PLL with a non-uniform top face", alg.name
                     );
-                    assert_ne!(f, SOLVED, "{}: PLL care nu face nimic", alg.name);
+                    assert_ne!(f, SOLVED, "{}: PLL that does nothing", alg.name);
                 }
                 Category::Oll => {
                     let mut scene = solved_scene();
@@ -304,7 +304,7 @@ mod tests {
                     let top: Vec<char> = f.chars().take(9).collect();
                     assert!(
                         !top.iter().all(|&c| c == top[0]),
-                        "{}: cazul OLL are deja orientarea rezolvata", alg.name
+                        "{}: OLL case already has the solved orientation", alg.name
                     );
                 }
             }

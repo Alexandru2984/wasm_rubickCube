@@ -1,10 +1,10 @@
-//! Integrarea solver-ului Kociemba (crate-ul kewb): extrage starea cubului
-//! din scena Bevy, o traduce in sirul de 54 de facelets, si mapeaza solutia
-//! inapoi pe mutari pe axele world.
+//! Kociemba solver integration (the kewb crate): extracts the cube state
+//! from the Bevy scene, translates it into the 54-facelet string, and maps
+//! the solution back onto world-axis moves.
 //!
-//! Totul e exprimat in world-frame: fata "U" a solver-ului e mereu stratul
-//! +Y, iar literele culorilor se aloca dupa centrele *curente* — asa ca
-//! mutarile de felii (M/E/S), care muta centrele, sunt tratate corect.
+//! Everything is expressed in world-frame: the solver's "U" face is always the
+//! +Y layer, and color letters are assigned from the *current* centers — so
+//! slice moves (M/E/S), which move centers, are handled correctly.
 
 use crate::CubeMove;
 use bevy::prelude::*;
@@ -12,7 +12,7 @@ use kewb::{CubieCube, DataTable, FaceCube, Move as KewbMove, Solver};
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI};
 
-/// Directiile world ale fetelor, in ordinea literelor kewb: U R F D L B.
+/// World directions of the faces, in kewb letter order: U R F D L B.
 const FACE_DIRS: [IVec3; 6] = [
     IVec3::Y,
     IVec3::X,
@@ -25,29 +25,29 @@ const FACE_CHARS: [char; 6] = ['U', 'R', 'F', 'D', 'L', 'B'];
 
 #[derive(Resource, Default)]
 pub struct SolverContext {
-    /// Tabelele two-phase; generate lazy la prima apasare pe SOLVE (~1-2s pe
-    /// wasm, o singura data pe sesiune). Serializate ar avea 6.8MB, deci nu
-    /// merita inglobate in binar.
+    /// Two-phase tables; generated lazily on the first press of SOLVE (~1-2s on
+    /// wasm, once per session). Serialized they'd be 6.8MB, so it's not
+    /// worth embedding them in the binary.
     pub table: Option<DataTable>,
-    /// Setat de butonul SOLVE; rezolvarea ruleaza in frame-ul urmator, ca UI-ul
-    /// sa apuce sa afiseze starea de lucru inainte de blocarea scurta.
+    /// Set by the SOLVE button; the solve runs on the next frame, so the UI
+    /// gets a chance to show the working state before the brief block.
     pub pending: bool,
 }
 
-/// Indexul fetei de origine a unui sticker (aceeasi ordine ca face_color).
+/// Home face index of a sticker (same order as face_color).
 fn home_color(axis: usize, sign: i32) -> usize {
     match (axis, sign > 0) {
-        (1, true) => 0,  // +Y alb
-        (1, false) => 1, // -Y galben
-        (0, true) => 2,  // +X rosu
-        (0, false) => 3, // -X portocaliu
-        (2, true) => 4,  // +Z albastru
-        _ => 5,          // -Z verde
+        (1, true) => 0,  // +Y white
+        (1, false) => 1, // -Y yellow
+        (0, true) => 2,  // +X red
+        (0, false) => 3, // -X orange
+        (2, true) => 4,  // +Z blue
+        _ => 5,          // -Z green
     }
 }
 
-/// Pozitia in grila a facelet-ului (face, row, col) in conventia Kociemba,
-/// verificata contra tabelelor CORNER_FACELET/EDGE_FACELET din kewb.
+/// Grid position of the facelet (face, row, col) in Kociemba convention,
+/// checked against kewb's CORNER_FACELET/EDGE_FACELET tables.
 fn facelet_pos(face: usize, row: i32, col: i32) -> IVec3 {
     match face {
         0 => IVec3::new(col - 1, 1, row - 1),  // U
@@ -59,9 +59,9 @@ fn facelet_pos(face: usize, row: i32, col: i32) -> IVec3 {
     }
 }
 
-/// Construieste sirul de 54 de facelets din starea scenei: pentru fiecare
-/// cubie, pozitia de origine rezulta din orientare (home = q⁻¹·pos), iar
-/// fiecare sticker de origine e proiectat pe directia lui world curenta.
+/// Builds the 54-facelet string from the scene state: for each
+/// cubie, the home position follows from its orientation (home = q⁻¹·pos), and
+/// each home sticker is projected onto its current world direction.
 pub fn scene_to_facelets(cubies: &[(IVec3, Quat)]) -> Option<String> {
     let mut stickers: HashMap<(IVec3, IVec3), usize> = HashMap::with_capacity(54);
     for &(pos, q) in cubies {
@@ -81,7 +81,7 @@ pub fn scene_to_facelets(cubies: &[(IVec3, Quat)]) -> Option<String> {
         return None;
     }
 
-    // Literele se aloca dupa culorile centrelor curente.
+    // Letters are assigned from the current center colors.
     let mut color_to_char = [None::<char>; 6];
     for (i, d) in FACE_DIRS.iter().enumerate() {
         let color = *stickers.get(&(*d, *d))?;
@@ -99,12 +99,12 @@ pub fn scene_to_facelets(cubies: &[(IVec3, Quat)]) -> Option<String> {
     Some(out)
 }
 
-/// Cub rezolvat = fiecare fata uniforma, pentru orice marime n x n.
-/// `max_c` e coordonata dublata a stratului exterior (n - 1). Spre deosebire
-/// de compararea orientarilor, definitia asta ignora rasucirea (invizibila)
-/// a centrelor.
+/// Solved cube = every face uniform, for any n x n size.
+/// `max_c` is the doubled coordinate of the outer layer (n - 1). Unlike
+/// comparing orientations directly, this definition ignores the (invisible)
+/// twist of centers.
 pub fn is_solved(cubies: &[(IVec3, Quat)], max_c: i32) -> bool {
-    // Culoarea vazuta pe fiecare directie de fata; None = inca nevazuta.
+    // Color seen on each face direction; None = not seen yet.
     let mut seen: [Option<usize>; 6] = [None; 6];
     for &(pos, q) in cubies {
         let home = (q.conjugate() * pos.as_vec3()).round().as_ivec3();
@@ -130,8 +130,8 @@ pub fn is_solved(cubies: &[(IVec3, Quat)], max_c: i32) -> bool {
     true
 }
 
-/// Traduce o mutare kewb (litera de fata) intr-o mutare pe axe world.
-/// O tura in sens orar a fetei cu directia d = -sign(d)·90° in jurul axei |d|.
+/// Translates a kewb move (face letter) into a world-axis move.
+/// A clockwise turn of the face with direction d = -sign(d)·90° around axis |d|.
 fn to_cube_move(m: KewbMove) -> CubeMove {
     use KewbMove::*;
     let (face, quarters) = match m {
@@ -154,16 +154,16 @@ fn to_cube_move(m: KewbMove) -> CubeMove {
     CubeMove {
         rotation_axis: axes[axis_idx],
         layer_axis: axis_idx as u8,
-        // Grila aplicatiei e in coordonate dublate: stratul exterior al
-        // cubului 3x3 e la ±2.
+        // The app's grid uses doubled coordinates: the outer layer of
+        // a 3x3 cube sits at ±2.
         layer_value: dir[axis_idx] * 2,
         angle,
     }
 }
 
-/// Rezolva starea curenta; intoarce mutarile de aplicat (goale daca e deja
-/// rezolvat) sau None daca starea nu poate fi citita (nu ar trebui sa se
-/// intample cu un cub valid).
+/// Solves the current state; returns the moves to apply (empty if already
+/// solved), or None if the state can't be read (shouldn't happen with a
+/// valid cube).
 pub fn solve_scene(table: &DataTable, cubies: &[(IVec3, Quat)]) -> Option<Vec<CubeMove>> {
     let facelets = scene_to_facelets(cubies)?;
     let face_cube = FaceCube::try_from(facelets.as_str()).ok()?;
@@ -182,8 +182,8 @@ mod tests {
     use crate::{max_coord, rotate_grid_pos};
     use std::sync::OnceLock;
 
-    /// Scena rezolvata a cubului n x n, in coordonate dublate (ca in app):
-    /// doar cubie-urile de la suprafata, orientare identitate.
+    /// Solved scene for an n x n cube, in doubled coordinates (as in the app):
+    /// only the surface cubies, identity orientation.
     fn solved_scene(n: i32) -> Vec<(IVec3, Quat)> {
         let max = max_coord(n);
         let mut v = Vec::new();
@@ -200,8 +200,8 @@ mod tests {
         v
     }
 
-    /// Aplica o mutare pe scena-simulare, la fel ca finalize-ul din
-    /// process_rotation: permuta pozitiile si compune orientarile.
+    /// Applies a move to the simulated scene, the same way process_rotation's
+    /// finalize does: permutes positions and composes orientations.
     fn apply_move_sim(cubies: &mut [(IVec3, Quat)], mv: &CubeMove) {
         let q = Quat::from_axis_angle(mv.rotation_axis, mv.angle);
         for (pos, rot) in cubies.iter_mut() {
@@ -219,7 +219,7 @@ mod tests {
         }
     }
 
-    /// Din coordonate dublate 3x3 (±2) in unitatile solver-ului (±1).
+    /// Converts doubled 3x3 coordinates (±2) to solver units (±1).
     fn halved(scene: &[(IVec3, Quat)]) -> Vec<(IVec3, Quat)> {
         scene.iter().map(|&(p, q)| (p / 2, q)).collect()
     }
@@ -251,9 +251,9 @@ mod tests {
 
     #[test]
     fn center_twist_is_still_solved() {
-        // U U U U readuce piesele, dar centrul U ramane cu orientare -360°
-        // (echivalenta); si mutari care rasucesc doar centre trebuie sa
-        // ramana "rezolvat".
+        // U U U U brings the pieces back, but the U center keeps a -360°
+        // orientation (equivalent to identity); moves that only twist centers must
+        // still count as "solved".
         let mut scene = solved_scene(3);
         for _ in 0..4 {
             apply_move_sim(&mut scene, &CubeMove::u(2));
@@ -267,14 +267,14 @@ mod tests {
         apply_move_sim(&mut scene, &CubeMove::x());
         apply_move_sim(&mut scene, &CubeMove::y());
         assert!(is_solved(&scene, 2));
-        // ...iar dupa o rotatie de cub intreg, o mutare de fata tot strica.
+        // ...and after a whole-cube rotation, a face move still breaks it.
         apply_move_sim(&mut scene, &CubeMove::r(2));
         assert!(!is_solved(&scene, 2));
     }
 
     #[test]
     fn slice_moves_are_handled_via_centers() {
-        // M muta centrele: starea ramane rezolvabila si detectabila.
+        // M moves centers: the state stays solvable and detectable.
         let mut scene = solved_scene(3);
         apply_move_sim(&mut scene, &CubeMove::m());
         assert!(!is_solved(&scene, 2));
@@ -287,8 +287,8 @@ mod tests {
 
     #[test]
     fn nxn_scramble_replay_solves() {
-        // Reproduce butonul SOLVE/REWIND pe NxN: scramble → replay inversul in
-        // ordine inversa → trebuie sa fie rezolvat.
+        // Reproduces the SOLVE/REWIND button on NxN: scramble → replay the inverse in
+        // reverse order → must end up solved.
         for n in [2, 3, 4, 5, 6] {
             let max = max_coord(n);
             for seed in [0xABCDEF_u64, 7, 999] {
@@ -303,7 +303,7 @@ mod tests {
                 }
                 assert!(
                     is_solved(&scene, max),
-                    "{n}x{n} seed {seed}: nerezolvat dupa replay-ul inversului"
+                    "{n}x{n} seed {seed}: not solved after replaying the inverse"
                 );
             }
         }
@@ -314,28 +314,28 @@ mod tests {
         for n in [2, 4, 5] {
             let max = max_coord(n);
             let mut scene = solved_scene(n);
-            assert!(is_solved(&scene, max), "cubul {n}x{n} rezolvat nedetectat");
+            assert!(is_solved(&scene, max), "{n}x{n} solved cube not detected");
 
             apply_move_sim(&mut scene, &CubeMove::r(max));
-            assert!(!is_solved(&scene, max), "{n}x{n}: R nedetectat ca nerezolvat");
+            assert!(!is_solved(&scene, max), "{n}x{n}: R not detected as unsolved");
             for _ in 0..3 {
                 apply_move_sim(&mut scene, &CubeMove::r(max));
             }
-            assert!(is_solved(&scene, max), "{n}x{n}: R de 4 ori nu e identitate");
+            assert!(is_solved(&scene, max), "{n}x{n}: R four times isn't identity");
 
-            // Strat interior (exista de la 4x4 in sus).
+            // Inner layer (exists from 4x4 upward).
             if n >= 4 {
                 let inner = CubeMove { layer_value: max - 2, ..CubeMove::r(max) };
                 apply_move_sim(&mut scene, &inner);
-                assert!(!is_solved(&scene, max), "{n}x{n}: strat interior nedetectat");
+                assert!(!is_solved(&scene, max), "{n}x{n}: inner layer not detected");
             }
         }
     }
 
     #[test]
     fn random_states_roundtrip_through_solver() {
-        // Testul-cheie: secvente aleatoare din TOATE mutarile noastre
-        // (fete, felii, prime, cub intreg) → solver → aplicare → rezolvat.
+        // Key test: random sequences from ALL our moves
+        // (faces, slices, primes, whole cube) → solver → apply → solved.
         let all_moves = [
             CubeMove::r(2), CubeMove::ri(2), CubeMove::l(2), CubeMove::li(2),
             CubeMove::u(2), CubeMove::ui(2), CubeMove::d(2), CubeMove::di(2),
