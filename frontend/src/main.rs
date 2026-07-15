@@ -1304,8 +1304,9 @@ fn egui_ui(
     let settled = queue.0.is_empty() && pointer.manual.is_none();
     let can_undo = settled && !history.0.is_empty();
     let can_redo = settled && !redo.0.is_empty();
-    // Algoritmul Kociemba exista doar pentru 3x3.
-    let can_solve = settled && !solver_ctx.pending && size.0 == 3;
+    // SOLVE merge la orice marime: pe 3x3 rezolva din orice stare (Kociemba),
+    // pe NxN deruleaza istoricul (deci are nevoie de istoric).
+    let can_solve = settled && !solver_ctx.pending && (size.0 == 3 || !history.0.is_empty());
     let can_rewind = settled && !history.0.is_empty();
 
     let mut do_scramble = false;
@@ -1367,15 +1368,17 @@ fn egui_ui(
         }
     }
 
-    // SOLVE: solutie Kociemba (~20 de mutari) din orice stare; ruleaza in
-    // run_solver la frame-ul urmator.
-    if do_solve {
+    // SOLVE pe 3x3: solutie Kociemba (~20 de mutari, din orice stare); ruleaza
+    // in run_solver la frame-ul urmator.
+    if do_solve && size.0 == 3 {
         solver_ctx.pending = true;
         stats.phase = Phase::Idle;
     }
 
-    // REWIND: deruleaza istoricul invers — drumul "cubul se desface singur".
-    if do_rewind && !history.0.is_empty() {
+    // REWIND (orice marime) sau SOLVE pe NxN (unde nu exista solver): deruleaza
+    // istoricul invers — drumul "cubul se desface singur".
+    let replay = do_rewind || (do_solve && size.0 != 3);
+    if replay && !history.0.is_empty() {
         queue.0.clear();
         redo.0.clear();
         stats.phase = Phase::Idle;

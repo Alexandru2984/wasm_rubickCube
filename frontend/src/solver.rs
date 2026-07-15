@@ -286,6 +286,30 @@ mod tests {
     }
 
     #[test]
+    fn nxn_scramble_replay_solves() {
+        // Reproduce butonul SOLVE/REWIND pe NxN: scramble → replay inversul in
+        // ordine inversa → trebuie sa fie rezolvat.
+        for n in [2, 3, 4, 5, 6] {
+            let max = max_coord(n);
+            for seed in [0xABCDEF_u64, 7, 999] {
+                let mut scene = solved_scene(n);
+                let scramble = crate::generate_scramble(seed, crate::scramble_len(n), n);
+                for mv in &scramble {
+                    apply_move_sim(&mut scene, mv);
+                }
+                let replay: Vec<CubeMove> = scramble.iter().rev().map(|m| m.inverse()).collect();
+                for mv in &replay {
+                    apply_move_sim(&mut scene, mv);
+                }
+                assert!(
+                    is_solved(&scene, max),
+                    "{n}x{n} seed {seed}: nerezolvat dupa replay-ul inversului"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn nxn_solved_detection() {
         for n in [2, 4, 5] {
             let max = max_coord(n);
