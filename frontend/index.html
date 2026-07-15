@@ -19,6 +19,10 @@
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body {
+        /* Inaltime definita: fit_canvas_to_parent masoara parintele (body),
+           iar fara height explicit body-ul colapseaza si canvas-ul iese scurt. */
+        width: 100%;
+        height: 100%;
         background: #1a1a2e;
         overflow: hidden;
         overscroll-behavior: none;
@@ -29,9 +33,8 @@
       }
       canvas {
         display: block;
-        width: 100vw;
-        height: 100vh;
-        height: 100dvh; /* pe mobil, 100vh depaseste viewportul real */
+        width: 100%;
+        height: 100%;
         touch-action: none;
         -webkit-tap-highlight-color: transparent;
       }

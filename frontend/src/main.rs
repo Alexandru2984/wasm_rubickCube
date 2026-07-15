@@ -61,6 +61,7 @@ fn main() {
         .insert_resource(ActiveRotation::default())
         .add_systems(Startup, (setup, restore_state).chain())
         .add_systems(Update, (
+            sync_canvas_resolution,
             pointer_input,
             update_camera_transform,
             camera_zoom,
@@ -79,6 +80,41 @@ fn main() {
 fn camera_radius(n: i32) -> f32 {
     3.4 * n as f32
 }
+
+/// winit-web seteaza rezolutia fizica a ferestrei la dimensiunea CSS a
+/// canvas-ului (fara sa inmulteasca cu devicePixelRatio), asa ca pe ecrane
+/// high-DPI Bevy randeaza la rezolutie prea mica, iar egui plaseaza gresit
+/// pozitiile de pointer (butoanele nu raspund la touch). Corectam manual:
+/// rezolutie fizica = CSS x dpr, scale_factor = dpr. Astfel egui lucreaza in
+/// puncte = pixeli CSS, iar touch-ul si widget-urile se aliniaza.
+#[cfg(target_arch = "wasm32")]
+fn sync_canvas_resolution(mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {
+    let Some(win) = web_sys::window() else { return; };
+    let dpr = win.device_pixel_ratio() as f32;
+    if dpr <= 0.0 { return; }
+    let Some(rect) = win
+        .document()
+        .and_then(|d| d.get_element_by_id("bevy"))
+        .map(|c| c.get_bounding_client_rect())
+    else {
+        return;
+    };
+    let (css_w, css_h) = (rect.width() as f32, rect.height() as f32);
+    if css_w < 1.0 || css_h < 1.0 { return; }
+    let (phys_w, phys_h) = ((css_w * dpr).round() as u32, (css_h * dpr).round() as u32);
+
+    let Ok(mut window) = windows.get_single_mut() else { return; };
+    let cur_w = window.resolution.physical_width();
+    let cur_h = window.resolution.physical_height();
+    let cur_sf = window.resolution.scale_factor();
+    if cur_w != phys_w || cur_h != phys_h || (cur_sf - dpr).abs() > 1e-3 {
+        window.resolution.set_scale_factor_override(Some(dpr));
+        window.resolution.set_physical_resolution(phys_w, phys_h);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_canvas_resolution(_windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {}
 
 /// Umbrele de la point light se randeaza intr-un cubemap peste toti cubii;
 /// la cuburi mari (~mii de piese) devine prea scump, deci le oprim.
@@ -1078,10 +1114,14 @@ fn egui_ui(
     time: Res<Time>,
 ) {
     let ctx = contexts.ctx_mut();
+    let compact = ctx.screen_rect().width() < 700.0;
 
-    // Selector de marime — sus-dreapta: stepper 2..20.
+    // Selector de marime — sus-stanga pe mobil (dreapta pe desktop), ca sa nu
+    // se suprapuna cu textul de hint centrat.
+    let size_anchor = if compact { egui::Align2::LEFT_TOP } else { egui::Align2::RIGHT_TOP };
+    let size_offset = if compact { egui::vec2(8.0, 8.0) } else { egui::vec2(-10.0, 10.0) };
     egui::Area::new("size_select".into())
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+        .anchor(size_anchor, size_offset)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let btn = |t: &str| egui::Button::new(egui::RichText::new(t).size(15.0));
@@ -1099,12 +1139,13 @@ fn egui_ui(
             });
         });
 
-    // Trainer de algoritmi — toggle sub selectorul de marime.
+    // Trainer de algoritmi — sus-dreapta pe mobil (langa selector), sub el pe desktop.
+    let tr_offset = if compact { egui::vec2(-8.0, 8.0) } else { egui::vec2(-10.0, 48.0) };
     egui::Area::new("trainer_toggle".into())
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 48.0))
+        .anchor(egui::Align2::RIGHT_TOP, tr_offset)
         .show(ctx, |ui| {
             let label = egui::RichText::new("Algoritmi").size(13.0);
-            if ui.add_sized(egui::vec2(96.0, 26.0), egui::SelectableLabel::new(tr.open, label)).clicked() {
+            if ui.add_sized(egui::vec2(96.0, 30.0), egui::SelectableLabel::new(tr.open, label)).clicked() {
                 tr.open = !tr.open;
             }
         });
@@ -1164,38 +1205,7 @@ fn egui_ui(
         tr.open = open;
     }
 
-    // Layout compact pe ecrane inguste (telefoane): butoane mari, jos, si
-    // hint-uri de gesturi in loc de taste.
-    let compact = ctx.screen_rect().width() < 700.0;
-
-    // 1. Hint-uri
-    if compact {
-        egui::Area::new("hints".into())
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 10.0))
-            .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new("Trage un sticker = rotesti stratul\nTrage in gol = rotesti cubul  ·  Pinch = zoom")
-                            .size(12.0)
-                            .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120)),
-                    );
-                });
-            });
-    } else {
-        egui::Area::new("hints".into())
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
-            .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "Fete: R L U D F B  |  Felii: M E S  |  Cub intreg: x y z  |  Shift = prime  |  Ctrl+Z / Ctrl+Shift+Z = undo / redo\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
-                    )
-                    .size(12.0)
-                    .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120))
-                );
-            });
-    }
-
-    // 2. HUD cronometru + contor (centrat sus, sub hint-urile de pe mobil).
+    // 1. HUD cronometru + contor. Are prioritate peste hint pe locul de sus.
     let case_tag = tr.current.map(|i| format!("{}  ·  ", trainer::ALGS[i].name)).unwrap_or_default();
     let hud_text = match stats.phase {
         Phase::Ready => Some(format!("{case_tag}⏱ cronometrul porneste la prima mutare")),
@@ -1206,15 +1216,46 @@ fn egui_ui(
         )),
         _ => None,
     };
+    let hud_visible = hud_text.is_some();
     if let Some(text) = hud_text {
-        let hud_y = if compact { 54.0 } else { 12.0 };
+        let hud_y = if compact { 52.0 } else { 12.0 };
         egui::Area::new("hud".into())
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, hud_y))
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(text)
-                        .size(17.0)
+                        .size(if compact { 15.0 } else { 17.0 })
                         .color(egui::Color32::from_rgba_unmultiplied(235, 235, 245, 200)),
+                );
+            });
+    }
+
+    // 2. Hint-uri de gesturi. Pe mobil, sub randul de control de sus, si doar
+    // cand HUD-ul nu ocupa deja locul.
+    if compact {
+        if !hud_visible {
+            egui::Area::new("hints".into())
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 52.0))
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new("Trage un sticker = rotesti stratul\nTrage in gol = rotesti cubul  ·  Pinch = zoom")
+                                .size(12.0)
+                                .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120)),
+                        );
+                    });
+                });
+        }
+    } else {
+        egui::Area::new("hints".into())
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Fete: R L U D F B  |  Felii: M E S  |  Cub intreg: x y z  |  Shift = prime  |  Ctrl+Z / Ctrl+Shift+Z = undo / redo\nDrag pe sticker = roteste stratul  |  Drag in afara = roteste vederea  |  Scroll / pinch = zoom"
+                    )
+                    .size(12.0)
+                    .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 120))
                 );
             });
     }
