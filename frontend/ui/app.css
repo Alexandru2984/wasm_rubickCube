@@ -47,6 +47,25 @@ html, body {
 
 body { position: fixed; inset: 0; }
 
+/* The 3D canvas is transparent: this gradient is the scene's backdrop, a soft
+   spotlight where the cube sits fading to dark edges (one per setting). */
+html { background: var(--bg); }
+body { background: radial-gradient(120% 80% at 50% 44%, #262b55 0%, #151830 45%, #0a0b16 100%) fixed; }
+html[data-bg="1"] body { background: radial-gradient(120% 80% at 50% 44%, #34343d 0%, #1c1c21 45%, #0d0d10 100%) fixed; }
+html[data-bg="2"] body { background: radial-gradient(120% 80% at 50% 44%, #174046 0%, #0c2124 45%, #040b0c 100%) fixed; }
+html[data-bg="3"] body { background: radial-gradient(120% 80% at 50% 44%, #ffffff 0%, #e8ebf2 45%, #c9cfdc 100%) fixed; }
+/* Text drawn straight on the light backdrop (panels keep their dark glass). */
+html[data-bg="3"] .topbar { background: linear-gradient(to bottom, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0)); }
+html[data-bg="3"] .brand { color: #161a2e; }
+html[data-bg="3"] .timer { text-shadow: none; }
+html[data-bg="3"] .timer.idle { color: rgba(22, 26, 46, 0.4); }
+html[data-bg="3"] .timer.running { color: #161a2e; }
+html[data-bg="3"] .timer.done { color: #a87800; }
+html[data-bg="3"] .timer.ready { color: #0d8a43; }
+html[data-bg="3"] .timer-sub,
+html[data-bg="3"] .status-text { color: #4a5068; text-shadow: none; }
+html[data-bg="3"] .mode-chip { color: #7a5600; background: rgba(255, 214, 10, 0.24); border-color: rgba(168, 120, 0, 0.45); }
+
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; touch-action: manipulation; }
 button:disabled { cursor: default; opacity: 0.38; }
@@ -389,7 +408,10 @@ dialog { color: var(--text); }
 .swatch[aria-pressed="true"] { border-color: var(--accent); }
 .bg-swatch { width: 34px; height: 34px; border-radius: 10px; border: 2px solid var(--line); }
 .bg-swatch[aria-pressed="true"] { border-color: var(--accent); }
-.bg-0 { background: #101120; } .bg-1 { background: #1a1a1f; } .bg-2 { background: #0a1719; } .bg-3 { background: #dce0eb; }
+.bg-0 { background: radial-gradient(circle at 50% 40%, #2b315f, #0a0b16); }
+.bg-1 { background: radial-gradient(circle at 50% 40%, #3a3a44, #0d0d10); }
+.bg-2 { background: radial-gradient(circle at 50% 40%, #1a4a50, #040b0c); }
+.bg-3 { background: radial-gradient(circle at 50% 40%, #ffffff, #c9cfdc); }
 input[type="range"] { width: 150px; accent-color: var(--accent); }
 textarea, input[type="text"], input[type="search"] {
   width: 100%; padding: 12px 14px; border-radius: 13px; background: #0d0e1b; border: 1px solid var(--line);

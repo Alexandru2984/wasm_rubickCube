@@ -4,8 +4,8 @@
 
 use crate::bridge::{self, json_array, json_str, Json, PlayerOp, UiCommand};
 use crate::cube::{
-    apply_move_instant, max_coord, rotate_grid, snap_rotation, spawn_cube, CubeAssets, CubeMove, GridPos, BACKGROUNDS,
-    LAYER_ALL, SCHEMES,
+    apply_move_instant, max_coord, rotate_grid, snap_rotation, spawn_cube, CubeAssets, CubeMove, GridPos,
+    BACKGROUND_COUNT, LAYER_ALL, SCHEMES,
 };
 use crate::input::{OrbitCamera, PointerState};
 use crate::notation::{format_alg, format_move, parse_alg};
@@ -196,7 +196,7 @@ impl Settings {
                     }
                 }
                 "bg" => {
-                    if let Some(x) = v.parse::<usize>().ok().filter(|&x| x < BACKGROUNDS.len()) {
+                    if let Some(x) = v.parse::<usize>().ok().filter(|&x| x < BACKGROUND_COUNT) {
                         self.background = x;
                     }
                 }
@@ -224,11 +224,6 @@ impl Settings {
             s.apply_str(&saved);
         }
         s
-    }
-
-    pub fn clear_color(&self) -> Color {
-        let [r, g, b] = BACKGROUNDS[self.background];
-        Color::srgb(r, g, b)
     }
 }
 
@@ -981,7 +976,6 @@ pub fn apply_settings(
     size: Res<CubeSize>,
     assets: Res<CubeAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut clear: ResMut<ClearColor>,
     mut shadow_light: Query<&mut DirectionalLight, With<ShadowLight>>,
     mut last: Local<Option<Settings>>,
 ) {
@@ -991,7 +985,6 @@ pub fn apply_settings(
     if last.as_ref().map(|l| l.scheme) != Some(settings.scheme) {
         assets.set_scheme(&mut materials, settings.scheme);
     }
-    clear.0 = settings.clear_color();
     if let Ok(mut light) = shadow_light.get_single_mut() {
         light.shadows_enabled = shadows_ok(size.0, &settings);
     }

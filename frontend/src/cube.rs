@@ -7,8 +7,26 @@ use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI};
 
 pub const CUBIE_SIZE: f32 = 0.92;
-const STICKER_SIZE: f32 = 0.80;
-const FACE_OFFSET: f32 = CUBIE_SIZE / 2.0 + 0.005;
+/// Rounded edges of the plastic body (see [`crate::mesh`]).
+const BEVEL: f32 = 0.08;
+/// Stickers cover the flat part of a face, with rounded corners.
+const STICKER_SIZE: f32 = 0.78;
+const STICKER_RADIUS: f32 = 0.1;
+const FACE_OFFSET: f32 = CUBIE_SIZE / 2.0 + 0.004;
+
+/// Geometry detail by cube size: (bevel segments per 45°, segments per
+/// sticker corner). Big cubes have thousands of cubies, each a few pixels
+/// wide, so they get cheaper meshes.
+fn detail_level(n: i32) -> usize {
+    match n {
+        ..=5 => 0,
+        6..=9 => 1,
+        10..=13 => 2,
+        14..=16 => 3,
+        _ => 4,
+    }
+}
+const DETAIL: [(u32, u32); 5] = [(4, 6), (3, 4), (2, 3), (1, 2), (0, 2)];
 
 pub const MIN_SIZE: i32 = 2;
 pub const MAX_SIZE: i32 = 20;
@@ -225,12 +243,10 @@ pub const SCHEMES: [[[f32; 3]; 6]; 5] = [
     ],
 ];
 
-pub const BACKGROUNDS: [[f32; 3]; 4] = [
-    [0.063, 0.067, 0.125], // midnight
-    [0.10, 0.10, 0.12],    // graphite
-    [0.04, 0.09, 0.10],    // deep teal
-    [0.86, 0.88, 0.92],    // daylight
-];
+/// Background choices (midnight, graphite, deep teal, daylight). The canvas
+/// is transparent: the page paints the background (a CSS gradient) behind
+/// it, so the engine only validates the setting.
+pub const BACKGROUND_COUNT: usize = 4;
 
 /// Home face index of a sticker (same order as [`SCHEMES`]).
 pub fn home_face(axis: usize, sign: i32) -> usize {
@@ -248,8 +264,9 @@ pub fn home_face(axis: usize, sign: i32) -> usize {
 /// six materials instead of thousands of stickers.
 #[derive(Resource)]
 pub struct CubeAssets {
-    pub cubie_mesh: Handle<Mesh>,
-    pub sticker_mesh: Handle<Mesh>,
+    /// Per [`detail_level`].
+    pub cubie_meshes: Vec<Handle<Mesh>>,
+    pub sticker_meshes: Vec<Handle<Mesh>>,
     pub body: Handle<StandardMaterial>,
     pub stickers: [Handle<StandardMaterial>; 6],
 }
@@ -261,18 +278,27 @@ impl CubeAssets {
             let [r, g, b] = palette[i];
             materials.add(StandardMaterial {
                 base_color: Color::srgb(r, g, b),
-                perceptual_roughness: 0.35,
-                reflectance: 0.3,
+                // Glossy vinyl: a soft highlight that moves as the cube turns.
+                perceptual_roughness: 0.3,
+                reflectance: 0.42,
                 double_sided: true,
                 ..default()
             })
         });
         Self {
-            cubie_mesh: meshes.add(Cuboid::new(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE)),
-            sticker_mesh: meshes.add(Rectangle::new(STICKER_SIZE, STICKER_SIZE)),
+            cubie_meshes: DETAIL
+                .iter()
+                .map(|&(seg, _)| meshes.add(crate::mesh::rounded_box(CUBIE_SIZE, BEVEL, seg)))
+                .collect(),
+            sticker_meshes: DETAIL
+                .iter()
+                .map(|&(_, seg)| meshes.add(crate::mesh::rounded_square(STICKER_SIZE, STICKER_RADIUS, seg)))
+                .collect(),
             body: materials.add(StandardMaterial {
-                base_color: Color::srgb(0.035, 0.035, 0.04),
-                perceptual_roughness: 0.85,
+                // Satin black plastic: dark, but the rounded edges catch light.
+                base_color: Color::srgb(0.03, 0.03, 0.036),
+                perceptual_roughness: 0.62,
+                reflectance: 0.3,
                 ..default()
             }),
             stickers,
@@ -294,6 +320,8 @@ impl CubeAssets {
 /// outer faces.
 pub fn spawn_cube(commands: &mut Commands, assets: &CubeAssets, n: i32) {
     let max = max_coord(n);
+    let level = detail_level(n);
+    let (cubie_mesh, sticker_mesh) = (&assets.cubie_meshes[level], &assets.sticker_meshes[level]);
     // (axis, sign, local offset, local rotation) per face, in SCHEMES order.
     let face_defs = [
         (1, 1, Vec3::new(0.0, FACE_OFFSET, 0.0), Quat::from_rotation_x(-FRAC_PI_2)),
@@ -315,7 +343,7 @@ pub fn spawn_cube(commands: &mut Commands, assets: &CubeAssets, n: i32) {
                 let id = commands
                     .spawn((
                         PbrBundle {
-                            mesh: assets.cubie_mesh.clone(),
+                            mesh: cubie_mesh.clone(),
                             material: assets.body.clone(),
                             transform: Transform::from_translation(p.as_vec3() * 0.5),
                             ..default()
@@ -329,7 +357,7 @@ pub fn spawn_cube(commands: &mut Commands, assets: &CubeAssets, n: i32) {
                     }
                     commands
                         .spawn(PbrBundle {
-                            mesh: assets.sticker_mesh.clone(),
+                            mesh: sticker_mesh.clone(),
                             material: assets.stickers[face].clone(),
                             transform: Transform { translation: offset, rotation, ..default() },
                             ..default()

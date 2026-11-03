@@ -125,6 +125,12 @@ function loadSettings() {
 }
 
 let settings = loadSettings();
+applyBackground();
+
+/** The canvas is transparent; the page paints the chosen background. */
+function applyBackground() {
+  document.documentElement.dataset.bg = String(settings.bg);
+}
 setLang(settings.lang);
 const sound = new Sound();
 sound.enabled = settings.sound;
@@ -136,6 +142,7 @@ function engineSettings() {
 
 function saveSettings() {
   store.set(KEYS.settings, settings);
+  applyBackground();
   sound.enabled = settings.sound;
   engine.send('settings', engineSettings());
 }

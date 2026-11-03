@@ -9,6 +9,7 @@ mod bridge;
 mod cube;
 mod game;
 mod input;
+mod mesh;
 mod notation;
 mod persist;
 mod scramble;
@@ -53,7 +54,10 @@ fn main() {
             focused_mode: UpdateMode::reactive(Duration::from_secs(2)),
             unfocused_mode: UpdateMode::reactive_low_power(Duration::from_secs(10)),
         })
-        .insert_resource(ClearColor(settings.clear_color()))
+        // Transparent: the page draws the background gradient behind the canvas
+        // (WebGL canvases have an alpha channel; MSAA edges blend correctly
+        // because the clear color is premultiplied zero).
+        .insert_resource(ClearColor(Color::NONE))
         .insert_resource(Msaa::Sample4)
         .insert_resource(settings)
         .insert_resource(game::CubeSize(size))
