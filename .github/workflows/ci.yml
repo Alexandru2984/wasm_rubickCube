@@ -2,41 +2,142 @@ name: ci
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
+  # Weekly run so new RustSec advisories surface even without pushes.
+  schedule:
+    - cron: "17 5 * * 1"
 
+# Least privilege: nothing in this workflow writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  TRUNK_VERSION: 0.21.14
+  # sha256 of trunk-x86_64-unknown-linux-gnu.tar.gz (matches the .sha256
+  # published with the release).
+  TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
+
+# Third-party actions are pinned to full commit SHAs (tags can be moved).
 jobs:
-  frontend:
+  rust:
+    name: Rust · fmt, clippy, tests
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
           targets: wasm32-unknown-unknown
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: frontend
-      - run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo test
-      - name: Install trunk
-        run: >
-          curl -sL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz
-          | tar xz -C /usr/local/bin trunk
-      - run: trunk build --release
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo clippy --locked --tests -- -D warnings
+      - run: cargo test --locked
+
+  web:
+    name: Page logic · node tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: node --test frontend/tests/*.test.mjs
+      - name: Syntax-check every shipped script
+        run: |
+          for f in frontend/ui/*.js frontend/assets/*.mjs frontend/assets/service-worker.js; do
+            node --check "$f"
+          done
+          python3 -m py_compile frontend/tools/postbuild.py
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-audit
+      # Strict: unsound, yanked and unmaintained crates fail too. Known,
+      # reviewed exceptions (unmaintained, no fixed release exists):
+      #   RUSTSEC-2025-0141 bincode — pulled in by kewb (solver tables)
+      #   RUSTSEC-2024-0436 paste   — proc-macro of the Windows accessibility
+      #                               backend (accesskit_windows), never in the WASM
+      - run: >
+          cargo audit --file frontend/Cargo.lock --deny warnings
+          --ignore RUSTSEC-2025-0141
+          --ignore RUSTSEC-2024-0436
+
+  build:
+    name: Release build
+    needs: [rust, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: frontend
+          key: release
+      - name: Install Trunk (checksum-verified)
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/trunk.tar.gz" \
+            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${TRUNK_SHA256}  $RUNNER_TEMP/trunk.tar.gz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/trunk.tar.gz" -C "$RUNNER_TEMP" trunk
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      # build.sh = trunk build --release + tools/postbuild.py, which fails on
+      # any inline script/handler/style (CSP) or a leaked local path.
+      - run: ./build.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: frontend/dist
+          retention-days: 7
+          if-no-files-found: error
 
   backend:
+    name: Backend (Gleam placeholder)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24
         with:
           otp-version: "28"
           gleam-version: "1.14.0"

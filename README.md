@@ -1,84 +1,106 @@
-# 🧊 Rubik's Cube — Rust + Bevy + WebAssembly
+# 🧊 Rubik's Cube 3D — Rust + Bevy + WebAssembly
 
 [![CI](https://github.com/Alexandru2984/wasm_rubickCube/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexandru2984/wasm_rubickCube/actions/workflows/ci.yml)
 
-An interactive 3D Rubik's Cube that runs entirely in the browser — no backend, no frameworks on the page, just a Bevy game engine scene compiled to WebAssembly.
+A 3D Rubik's Cube you can play, time and learn in the browser. The cube is a Bevy scene compiled to WebAssembly. Around it is a hand-written HTML interface built for phones first. There's no backend and no account, and after the first visit it works offline.
 
-**▶ Play it live: [cube.micutu.com](https://cube.micutu.com)**
-
-Works on desktop (mouse + keyboard) and mobile (touch-first controls), installs as a PWA, and keeps working offline after the first visit.
+**▶ Play: [cube.micutu.com](https://cube.micutu.com)**
 
 ## Features
 
-- **2×2 up to 20×20 cubes** — one integer-lattice move engine drives every size; the grid uses doubled coordinates so even cubes (no middle layer) stay exact.
-- **Live layer dragging** — grab any sticker and the layer follows your finger in real time, snapping to the nearest 90° on release. Drag outside the cube to orbit the camera; pinch to zoom.
-- **Kociemba two-phase solver** (3×3) — the ✨ SOLVE button computes a ~20-move solution from *any* reachable state (via [kewb](https://crates.io/crates/kewb)) and plays it back move by move.
-- **OLL / PLL algorithm trainer** (3×3) — pick any of the 78 last-layer cases; the cube sets itself into that case (setup by inverse) and the algorithm solves it, with an optional random recognition angle.
-- **Rewind** — alternatively, watch the cube retrace your entire move history in reverse (any size).
-- **Speedcubing timer** — arms after a scramble, starts on your first move, stops on solve detection, and tracks a personal best per cube size.
-- **Undo / redo** — buttons or `Ctrl+Z` / `Ctrl+Shift+Z`.
-- **Full persistence** — cube size, state, history and records survive page reloads (localStorage).
-- **Keyboard notation** — `R L U D F B` faces, `M E S` slices, `x y z` whole-cube rotations, `Shift` for prime moves.
+**Play**
+- **2×2 up to 20×20.** One integer-lattice move engine drives every size; doubled coordinates keep even cubes exact.
+- **Live layer dragging.** Grab a sticker and the layer follows your finger, snapping to 90° on release. Drag the background to orbit, pinch or scroll to zoom.
+- **Move keypad** for full notation (`R U' M2 x …`) and a **keyboard**: face letters, `Shift` for prime, `Alt` for wide moves, `Space` to scramble, `Ctrl+Z / Ctrl+Y`.
+- **Undo / redo / rewind**, and a **move player** that steps through solutions and algorithms (play, pause, step, jump to start or end).
 
-## Engineering highlights
+**Speedcubing**
+- WCA-style random-move scrambles (deterministic per seed), a timer that starts on your first turn, and optional **WCA inspection** (15 s, warnings at 8 s and 12 s, +2 and DNF).
+- **Statistics per size**: ao5 / ao12 / ao100 with WCA trimming, best single and averages, a progress chart, +2/DNF/delete per solve, plus CSV and JSON export and a validated import.
+- **Kociemba two-phase solver** (3×3, via [kewb](https://crates.io/crates/kewb)). It plays its ~20-move solution step by step, or gives a single-move **hint**.
 
-**25 MB → 11 MB WASM (4.1 MB on the wire).** Bevy's default feature set ships audio, glTF, animation, UI, and text stacks this project never touches. Trimming to `bevy_winit + bevy_pbr + webgl2`, building with full LTO at `opt-level = "z"`, and serving precompressed gzip through nginx `gzip_static` cut first-load size by ~84%. A loading screen with real download progress (Trunk initializer hooks) covers the rest.
+**Coming back every day**
+- **Daily challenge**: the same scramble for everyone each day, a countdown, the last 7 days and a streak.
+- **Algorithm trainer**: all 21 PLL and 57 OLL cases plus patterns, with a random AUF for recognition, per-case stats and "show me".
+- **Algorithm lab**: write any sequence, then run it, set it up, invert it or share it as a link.
+- **23 achievements**, a solved screen with your PB and ao5, confetti, sound and haptics.
+- **Share links** for a scramble, an algorithm or the current state (`#scramble=…`, `#alg=…`, `#state=…`, `#daily`), with Web Share on phones.
 
-**Drag detection with real geometry.** A screen-space ray is cast against the cubies' rotated AABBs; the hit face's normal restricts candidate rotation axes to the two lying in the face plane — the same constraint a physical cube gives your hand. The chosen axis is the one whose screen-projected tangent best matches the drag direction, and the layer angle then tracks the pointer directly (radians per pixel), so the cube feels held rather than clicked.
+**Comfort**
+- Romanian and English, five color schemes (including a colorblind-friendly one), backgrounds, animation speed and a battery saver.
+- Installable PWA with shortcuts to the daily challenge, the trainer and stats. The engine renders on demand, so an idle cube costs no battery.
 
-**State extraction for the solver.** The renderer is the source of truth: each cubie's home position is recovered from its orientation quaternion (`home = q⁻¹ · pos`), stickers are projected to their current world directions, and the 54-facelet string is assembled with face letters assigned from the *current* centers — which is what makes slice moves (they relocate centers) solve correctly. The solution comes back in face letters and is mapped onto world-axis layer rotations.
+## Security
 
-**Solved detection that survives center twists.** Comparing piece orientations naively fails on a real solve: face centers accumulate invisible twists around their own normals. Solved is therefore defined on facelets — every face uniform — which is the physical definition.
+The site is static, but it's still treated as an attack surface:
 
-**Setup-by-inverse trainer.** The OLL/PLL trainer doesn't hardcode per-case scrambles. It parses each algorithm from standard notation, runs it backwards to place the cube into exactly the state that algorithm resolves, then hands control back. This makes correctness independent of labels — and a unit test proves it for all 78 cases at once: every algorithm parses, its inverse-then-forward is identity, it preserves the first two layers, and it matches its declared category (PLL leaves the top face one color, OLL doesn't).
+- **Strict CSP**: `default-src 'none'`, with no `'unsafe-inline'` for scripts or styles. Only `'wasm-unsafe-eval'` is needed for WebAssembly. The build moves Trunk's inline bootstrap into a hashed file and **fails** if any inline script, event handler or `style=` attribute appears.
+- **Subresource Integrity** on every first-party script and stylesheet. UI files are served from content-hashed URLs.
+- The page never uses `innerHTML`. Every DOM node goes through a builder with an attribute allow-list. Everything read from storage, imports or the URL is validated and size-capped. CSV export defuses spreadsheet formulas.
+- The engine accepts only allow-listed commands through a bounded queue. The notation parser limits input length, move count, nesting and repetition.
+- nginx re-applies the security headers in every location. Responses carry HSTS, COOP/CORP, `X-Frame-Options: DENY` and a locked-down Permissions-Policy. Only GET and HEAD are allowed, real 404s replace the old SPA fallback, and dotfiles are denied.
+- Source paths are remapped at build time, so the binary doesn't reveal the build machine's layout. CI pins every third-party action to a commit SHA, verifies the Trunk download's checksum and runs a strict `cargo audit` weekly.
 
-**No float drift, ever.** Grid positions are integers; after every animation the orientation quaternion is snapped back to the nearest 90°-multiple rotation matrix. A thousand moves later the cube is still exact, which is also what lets the persistence layer store a whole session as 3 digits per move.
+## Engineering notes
 
-All of the above is covered by native unit tests (`cargo test`), including scramble → solver → apply → solved round-trips over random states with slice moves.
+- **Integer move engine.** Grid positions are integers and every quarter turn is an exact lattice rotation. Orientations are snapped back to 90° multiples after each animation, so a thousand moves later the cube is still exact, and the history can be stored as compact integers.
+- **Drag detection with real geometry.** A screen ray is cast against the cubies' AABBs. The hit face's normal limits the candidate axes to the two lying in that face, and the drag direction picks between them.
+- **State extraction for the solver.** Each cubie's home position is recovered from its orientation (`home = q⁻¹ · pos`). The 54-facelet string uses the *current* centers, which is why slice moves solve correctly.
+- **Framing.** The page reports how much of the screen its UI covers, and the camera frames the cube in the free band, easing over when the keypad or the player opens. Lights are attached to the camera, so every angle shows three clearly shaded faces.
+- **Size.** Trimmed Bevy features, full LTO, `opt-level = "z"` and `wasm-opt -Oz` produce 7.7 MB of WASM, about 2.5 MB gzipped, served precompressed through nginx `gzip_static`.
+
+Native unit tests cover the move algebra, notation parser, scrambles, persistence codec, bridge parsing, camera fit and solver round-trips (`cargo test`). Node tests cover statistics, averages, validation and CSV escaping (`node --test`).
 
 ## Tech stack
 
 | | |
 |---|---|
-| Language | Rust |
-| Engine | [Bevy 0.14](https://bevyengine.org/) (trimmed features, WebGL2) |
-| UI overlay | `bevy_egui` |
+| Engine | Rust, [Bevy 0.14](https://bevyengine.org/) (trimmed, WebGL2) |
+| Interface | Plain ES modules + CSS, no framework (`frontend/ui/`) |
 | Solver | [kewb](https://crates.io/crates/kewb) (Kociemba two-phase) |
-| Build | [Trunk](https://trunkrs.dev/) → `wasm32-unknown-unknown`, `wasm-opt -Oz` |
-| Hosting | nginx, static files + `gzip_static`, PWA service worker |
-
-## Controls
-
-| Input | Action |
-|---|---|
-| Drag on a sticker | Rotate that layer (follows the pointer, snaps on release) |
-| Drag on background | Orbit camera |
-| Scroll / pinch | Zoom |
-| `R L U D F B` / `M E S` | Face / slice moves (`Shift` = counter-clockwise) |
-| `x y z` | Whole-cube rotations (`Shift` = counter-clockwise) |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
-| 2×2 … 5×5 selector | Switch cube size (top-right) |
+| Build | [Trunk](https://trunkrs.dev/) → `wasm32-unknown-unknown`, then `tools/postbuild.py` |
+| Hosting | nginx (static files, `gzip_static`) behind Cloudflare, atomic releases |
 
 ## Development
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo install trunk
+cargo install trunk --version 0.21.14 --locked
 
 cd frontend
-trunk serve            # dev server at http://127.0.0.1:8080
-cargo test             # native unit tests (cube algebra, codec, solver round-trips)
+trunk serve                      # dev server at http://127.0.0.1:8080
+cargo test                       # engine unit tests
+node --test tests/*.test.mjs     # page logic tests
+./build.sh                       # release build into frontend/dist
 ```
 
-`./deploy.sh` builds the release bundle, precompresses it, and copies it to the web root.
+## Deployment
+
+```bash
+deploy/install-nginx.sh    # install the vhost + header snippet (backs up, tests, reloads)
+deploy/deploy.sh           # build, publish a new release, switch atomically
+deploy/deploy.sh --rollback
+```
+
+Releases live in `/srv/canary/cube.micutu.com/releases/<UTC stamp>-<commit>/`. The site root is a symlink, swapped with a single `rename(2)`, and the last five releases are kept.
 
 ## Project layout
 
 ```
 frontend/
-  src/main.rs      # scene, input (mouse/touch), move engine, UI, persistence
-  src/solver.rs    # scene → facelets → Kociemba solver → world moves
-  src/trainer.rs   # OLL/PLL algorithm library, notation parser, setup-by-inverse
-  assets/          # PWA manifest, icons, service worker, loading screen
-backend/           # experimental Gleam stub — not deployed
+  src/main.rs        app setup, plugins, system order
+  src/cube.rs        cubies, integer moves, color schemes
+  src/game.rs        session state, commands, animation, solve detection, state to the page
+  src/input.rs       pointer drag/orbit/pinch, camera framing
+  src/notation.rs    WCA/SiGN notation parser and formatter
+  src/scramble.rs    seeded random-move scrambles
+  src/solver.rs      scene → facelets → Kociemba → moves
+  src/trainer.rs     PLL/OLL/pattern library
+  src/persist.rs     localStorage codec (with migration from v3)
+  src/bridge.rs      page ⇄ engine commands and events
+  ui/                the interface (app.js, stats.js, i18n.js, fx.js, app.css)
+  assets/            manifest, icons, service worker, loader, 404, OG image
+  tools/postbuild.py CSP/SRI/hashing/precache/sitemap post-processing
+deploy/              nginx vhost + headers, install and deploy scripts
+backend/             Gleam placeholder, not deployed (a future home for leaderboards)
 ```

@@ -1,0 +1,5 @@
+# Pin the tools Trunk downloads, so local and CI builds use the same
+# wasm-bindgen (must match Cargo.lock) and wasm-opt.
+[tools]
+wasm_bindgen = "0.2.118"
+wasm_opt = "version_123"
