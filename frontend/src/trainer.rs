@@ -1,18 +1,30 @@
-//! OLL/PLL algorithm trainer (3x3).
+//! Algorithm trainer (3x3): OLL / PLL drills plus a few classic patterns.
 //!
-//! "Setup by inverse" design: the cube is placed into the state `alg⁻¹(solved)`,
-//! so executing the algorithm is guaranteed to solve it — drill correctness
-//! doesn't depend on labels. Tests verify each algorithm structurally:
-//! it preserves F2L (first two layers + centers) and matches its category.
+//! "Setup by inverse" design: for a drill the cube is placed into the state
+//! `alg⁻¹(solved)`, so executing the algorithm is guaranteed to solve it —
+//! correctness doesn't depend on labels. Patterns are the opposite: the
+//! algorithm itself is applied to a solved cube. Tests verify every entry
+//! structurally (F2L preserved, category matches, pattern looks right).
 
-use crate::{CubeMove, LAYER_ALL};
+use crate::cube::CubeMove;
+use crate::notation::parse_alg;
 use bevy::prelude::*;
-use std::f32::consts::{FRAC_PI_2, PI};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
     Pll,
     Oll,
+    Pattern,
+}
+
+impl Category {
+    pub fn code(self) -> &'static str {
+        match self {
+            Category::Pll => "pll",
+            Category::Oll => "oll",
+            Category::Pattern => "pattern",
+        }
+    }
 }
 
 pub struct Alg {
@@ -23,78 +35,12 @@ pub struct Alg {
 
 #[derive(Resource, Default)]
 pub struct Trainer {
-    pub open: bool,
-    pub random_auf: bool,
-    /// Current case (index into ALGS) — shown in the HUD and window.
+    /// Current case (index into ALGS).
     pub current: Option<usize>,
-    /// Chosen case, to apply once the scene is settled (and on a 3x3).
-    pub pending: Option<usize>,
 }
 
-/// Parses standard notation: faces (R U F...), slices (M E S), rotations (x y z),
-/// wide moves (r u f... = face + adjacent slice), ' and 2 suffixes.
-pub fn parse_alg(s: &str) -> Option<Vec<CubeMove>> {
-    let max = 2; // 3x3 in doubled coordinates
-
-    let face = |axis: Vec3, layer_axis: u8, layer: i32, cw_sign: f32| CubeMove {
-        rotation_axis: axis,
-        layer_axis,
-        layer_value: layer,
-        angle: cw_sign * FRAC_PI_2,
-    };
-
-    let mut out = Vec::new();
-    for token in s.replace(['(', ')'], " ").split_whitespace() {
-        let mut chars = token.chars();
-        let base = chars.next()?;
-        let rest: String = chars.collect();
-        let (double, prime) = match rest.as_str() {
-            "" => (false, false),
-            "'" => (false, true),
-            "2" | "2'" => (true, false),
-            _ => return None,
-        };
-
-        // (base move, attached slice for wide moves)
-        let (main, wide): (CubeMove, Option<CubeMove>) = match base {
-            'R' => (face(Vec3::X, 0, max, -1.0), None),
-            'L' => (face(Vec3::X, 0, -max, 1.0), None),
-            'U' => (face(Vec3::Y, 1, max, -1.0), None),
-            'D' => (face(Vec3::Y, 1, -max, 1.0), None),
-            'F' => (face(Vec3::Z, 2, max, -1.0), None),
-            'B' => (face(Vec3::Z, 2, -max, 1.0), None),
-            'M' => (face(Vec3::X, 0, 0, 1.0), None),
-            'E' => (face(Vec3::Y, 1, 0, 1.0), None),
-            'S' => (face(Vec3::Z, 2, 0, -1.0), None),
-            'x' => (face(Vec3::X, 0, LAYER_ALL, -1.0), None),
-            'y' => (face(Vec3::Y, 1, LAYER_ALL, -1.0), None),
-            'z' => (face(Vec3::Z, 2, LAYER_ALL, -1.0), None),
-            // wide: face + the middle slice that moves along with it
-            'r' => (face(Vec3::X, 0, max, -1.0), Some(face(Vec3::X, 0, 0, -1.0))),
-            'l' => (face(Vec3::X, 0, -max, 1.0), Some(face(Vec3::X, 0, 0, 1.0))),
-            'u' => (face(Vec3::Y, 1, max, -1.0), Some(face(Vec3::Y, 1, 0, -1.0))),
-            'd' => (face(Vec3::Y, 1, -max, 1.0), Some(face(Vec3::Y, 1, 0, 1.0))),
-            'f' => (face(Vec3::Z, 2, max, -1.0), Some(face(Vec3::Z, 2, 0, -1.0))),
-            'b' => (face(Vec3::Z, 2, -max, 1.0), Some(face(Vec3::Z, 2, 0, 1.0))),
-            _ => return None,
-        };
-
-        for mv in std::iter::once(main).chain(wide) {
-            let mut mv = mv;
-            if prime {
-                mv.angle = -mv.angle;
-            }
-            if double {
-                mv.angle *= 2.0;
-                // ±180° are equivalent; keep the angle within [-PI, PI]
-                if mv.angle > PI + 1e-3 || mv.angle < -PI - 1e-3 {
-                    return None;
-                }
-            }
-            out.push(mv);
-        }
-    }
-    if out.is_empty() { None } else { Some(out) }
+pub fn alg_moves(i: usize) -> Vec<CubeMove> {
+    parse_alg(ALGS[i].moves, 3).expect("valid algorithm (checked in tests)")
 }
 
 /// Inverse of an algorithm: the moves inverted, in reverse order.
@@ -185,128 +131,114 @@ pub const ALGS: &[Alg] = &[
     Alg { name: "OLL 55", category: Category::Oll, moves: "R' F R U R U' R2 F' R2 U' R' U R U R'" },
     Alg { name: "OLL 56", category: Category::Oll, moves: "r U r' U R U' R' U R U' R' r U' r'" },
     Alg { name: "OLL 57", category: Category::Oll, moves: "R U R' U' M' U R U' r'" },
+
+    // ── Patterns (applied from solved) ────────────────────────────────────
+    Alg { name: "Checkerboard", category: Category::Pattern, moves: "M2 E2 S2" },
+    Alg { name: "Dots",         category: Category::Pattern, moves: "U D' R L' F B' U D'" },
+    Alg { name: "Superflip",    category: Category::Pattern, moves: "U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L B2 U2 F2" },
+    Alg { name: "Cube in cube", category: Category::Pattern, moves: "F L F U' R U F2 L2 U' L' B D' B' L2 U" },
+    Alg { name: "Stripes",      category: Category::Pattern, moves: "R2 L2 U2 D2" },
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cube::{apply_sim, solved_scene};
     use crate::solver::scene_to_facelets;
-    use crate::{max_coord, rotate_grid_pos};
 
     const SOLVED: &str = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 
-    fn solved_scene() -> Vec<(IVec3, Quat)> {
-        let max = max_coord(3);
-        let mut v = Vec::new();
-        for x in (-max..=max).step_by(2) {
-            for y in (-max..=max).step_by(2) {
-                for z in (-max..=max).step_by(2) {
-                    if x.abs() != max && y.abs() != max && z.abs() != max {
-                        continue;
-                    }
-                    v.push((IVec3::new(x, y, z), Quat::IDENTITY));
-                }
-            }
-        }
-        v
-    }
-
-    fn apply(scene: &mut [(IVec3, Quat)], moves: &[CubeMove]) {
-        for mv in moves {
-            let q = Quat::from_axis_angle(mv.rotation_axis, mv.angle);
-            for (pos, rot) in scene.iter_mut() {
-                let layer_val = match mv.layer_axis { 0 => pos.x, 1 => pos.y, _ => pos.z };
-                if !mv.affects(layer_val) { continue; }
-                let (nx, ny, nz) = rotate_grid_pos(pos.x, pos.y, pos.z, mv.rotation_axis, mv.angle);
-                *pos = IVec3::new(nx, ny, nz);
-                *rot = (q * *rot).normalize();
-            }
-        }
-    }
-
-    fn facelets(scene: &[(IVec3, Quat)]) -> String {
+    fn facelets_after(moves: &[CubeMove]) -> String {
+        let mut scene = solved_scene(3);
+        apply_sim(&mut scene, moves);
         let halved: Vec<_> = scene.iter().map(|&(p, q)| (p / 2, q)).collect();
         scene_to_facelets(&halved).expect("facelets")
     }
 
     /// Indices that don't belong to the last layer (F2L + side centers + D).
     fn f2l_indices() -> Vec<usize> {
-        let last_layer: Vec<usize> = (0..9)
-            .chain(9..12)   // top row of the R face
-            .chain(18..21)  // F
-            .chain(36..39)  // L
-            .chain(45..48)  // B
-            .collect();
+        let last_layer: Vec<usize> = (0..9).chain(9..12).chain(18..21).chain(36..39).chain(45..48).collect();
         (0..54).filter(|i| !last_layer.contains(i)).collect()
     }
 
     #[test]
     fn all_algs_parse() {
-        for alg in ALGS {
-            let moves = parse_alg(alg.moves)
-                .unwrap_or_else(|| panic!("algorithm {} doesn't parse", alg.name));
-            assert!(!moves.is_empty());
+        for (i, alg) in ALGS.iter().enumerate() {
+            assert!(!alg_moves(i).is_empty(), "{} is empty", alg.name);
         }
     }
 
     #[test]
     fn alg_then_inverse_is_identity() {
-        for alg in ALGS {
-            let moves = parse_alg(alg.moves).unwrap();
-            let mut scene = solved_scene();
-            apply(&mut scene, &moves);
-            apply(&mut scene, &inverse_alg(&moves));
-            assert_eq!(facelets(&scene), SOLVED, "{}: alg + inverse ≠ identity", alg.name);
+        for (i, alg) in ALGS.iter().enumerate() {
+            let m = alg_moves(i);
+            let both: Vec<_> = m.iter().copied().chain(inverse_alg(&m)).collect();
+            assert_eq!(facelets_after(&both), SOLVED, "{}", alg.name);
         }
     }
 
-    /// Any last-layer algorithm must leave F2L untouched.
     #[test]
-    fn all_algs_preserve_f2l() {
+    fn last_layer_algs_preserve_f2l() {
         let solved: Vec<char> = SOLVED.chars().collect();
-        for alg in ALGS {
-            let moves = parse_alg(alg.moves).unwrap();
-            let mut scene = solved_scene();
-            apply(&mut scene, &moves);
-            let after: Vec<char> = facelets(&scene).chars().collect();
-            for &i in &f2l_indices() {
-                assert_eq!(
-                    after[i], solved[i],
-                    "{}: breaks F2L at facelet {i}", alg.name
-                );
+        for (i, alg) in ALGS.iter().enumerate() {
+            if alg.category == Category::Pattern {
+                continue;
+            }
+            let after: Vec<char> = facelets_after(&alg_moves(i)).chars().collect();
+            for &k in &f2l_indices() {
+                assert_eq!(after[k], solved[k], "{}: breaks F2L at facelet {k}", alg.name);
             }
         }
     }
 
-    /// PLL: applied to a solved cube, leaves the top face uniform (permutes only)
-    /// and isn't the identity. OLL: the inverse (the case's starting state) has a
-    /// non-uniform top face (it's an orientation case).
+    /// PLL: leaves the top face uniform and isn't the identity. OLL: the case
+    /// (inverse applied to solved) has a non-uniform top face.
     #[test]
     fn algs_match_their_category() {
-        for alg in ALGS {
-            let moves = parse_alg(alg.moves).unwrap();
+        for (i, alg) in ALGS.iter().enumerate() {
+            let m = alg_moves(i);
             match alg.category {
                 Category::Pll => {
-                    let mut scene = solved_scene();
-                    apply(&mut scene, &moves);
-                    let f = facelets(&scene);
+                    let f = facelets_after(&m);
                     let top: Vec<char> = f.chars().take(9).collect();
-                    assert!(
-                        top.iter().all(|&c| c == top[0]),
-                        "{}: PLL with a non-uniform top face", alg.name
-                    );
+                    assert!(top.iter().all(|&c| c == top[0]), "{}: PLL with a non-uniform top", alg.name);
                     assert_ne!(f, SOLVED, "{}: PLL that does nothing", alg.name);
                 }
                 Category::Oll => {
-                    let mut scene = solved_scene();
-                    apply(&mut scene, &inverse_alg(&moves));
-                    let f = facelets(&scene);
+                    let f = facelets_after(&inverse_alg(&m));
                     let top: Vec<char> = f.chars().take(9).collect();
-                    assert!(
-                        !top.iter().all(|&c| c == top[0]),
-                        "{}: OLL case already has the solved orientation", alg.name
-                    );
+                    assert!(!top.iter().all(|&c| c == top[0]), "{}: OLL already oriented", alg.name);
                 }
+                Category::Pattern => assert_ne!(facelets_after(&m), SOLVED, "{}", alg.name),
+            }
+        }
+    }
+
+    fn pattern(name: &str) -> Vec<char> {
+        let i = ALGS.iter().position(|a| a.name == name).unwrap();
+        facelets_after(&alg_moves(i)).chars().collect()
+    }
+
+    #[test]
+    fn patterns_look_right() {
+        // Checkerboard: on every face corners+center share one color, edges another.
+        let f = pattern("Checkerboard");
+        for face in f.chunks(9) {
+            assert!([0, 2, 6, 8].iter().all(|&k| face[k] == face[4]));
+            assert!([1, 3, 5, 7].iter().all(|&k| face[k] == face[1] && face[k] != face[4]));
+        }
+        // Dots: every face uniform except its center.
+        let f = pattern("Dots");
+        for face in f.chunks(9) {
+            assert!((0..9).filter(|&k| k != 4).all(|k| face[k] == face[0]) && face[4] != face[0]);
+        }
+        // Superflip: corners and centers solved, every edge sticker flipped.
+        let f = pattern("Superflip");
+        let s: Vec<char> = SOLVED.chars().collect();
+        for (k, (a, b)) in f.iter().zip(&s).enumerate() {
+            match k % 9 {
+                1 | 3 | 5 | 7 => assert_ne!(a, b, "superflip edge {k}"),
+                _ => assert_eq!(a, b, "superflip corner/center {k}"),
             }
         }
     }

@@ -6,21 +6,13 @@
 //! +Y layer, and color letters are assigned from the *current* centers — so
 //! slice moves (M/E/S), which move centers, are handled correctly.
 
-use crate::CubeMove;
+use crate::cube::{home_face, CubeMove};
 use bevy::prelude::*;
 use kewb::{CubieCube, DataTable, FaceCube, Move as KewbMove, Solver};
 use std::collections::HashMap;
-use std::f32::consts::{FRAC_PI_2, PI};
 
 /// World directions of the faces, in kewb letter order: U R F D L B.
-const FACE_DIRS: [IVec3; 6] = [
-    IVec3::Y,
-    IVec3::X,
-    IVec3::Z,
-    IVec3::NEG_Y,
-    IVec3::NEG_X,
-    IVec3::NEG_Z,
-];
+const FACE_DIRS: [IVec3; 6] = [IVec3::Y, IVec3::X, IVec3::Z, IVec3::NEG_Y, IVec3::NEG_X, IVec3::NEG_Z];
 const FACE_CHARS: [char; 6] = ['U', 'R', 'F', 'D', 'L', 'B'];
 
 #[derive(Resource, Default)]
@@ -29,21 +21,13 @@ pub struct SolverContext {
     /// wasm, once per session). Serialized they'd be 6.8MB, so it's not
     /// worth embedding them in the binary.
     pub table: Option<DataTable>,
-    /// Set by the SOLVE button; the solve runs on the next frame, so the UI
-    /// gets a chance to show the working state before the brief block.
+    /// Set by the SOLVE button; the solve runs once the cube is settled.
     pub pending: bool,
-}
-
-/// Home face index of a sticker (same order as face_color).
-fn home_color(axis: usize, sign: i32) -> usize {
-    match (axis, sign > 0) {
-        (1, true) => 0,  // +Y white
-        (1, false) => 1, // -Y yellow
-        (0, true) => 2,  // +X red
-        (0, false) => 3, // -X orange
-        (2, true) => 4,  // +Z blue
-        _ => 5,          // -Z green
-    }
+    /// Play the solution right away (SOLVE) or step through it (HINT).
+    pub autoplay: bool,
+    /// One frame of grace before the blocking table generation, so the page
+    /// can paint its "working" state.
+    pub armed: bool,
 }
 
 /// Grid position of the facelet (face, row, col) in Kociemba convention,
@@ -74,7 +58,7 @@ pub fn scene_to_facelets(cubies: &[(IVec3, Quat)]) -> Option<String> {
             let mut home_normal = Vec3::ZERO;
             home_normal[axis] = sign as f32;
             let world_dir = (q * home_normal).round().as_ivec3();
-            stickers.insert((pos, world_dir), home_color(axis, sign));
+            stickers.insert((pos, world_dir), home_face(axis, sign));
         }
     }
     if stickers.len() != 54 {
@@ -119,7 +103,7 @@ pub fn is_solved(cubies: &[(IVec3, Quat)], max_c: i32) -> bool {
             let Some(face) = FACE_DIRS.iter().position(|d| *d == world_dir) else {
                 return false;
             };
-            let color = home_color(axis, sign);
+            let color = home_face(axis, sign);
             match seen[face] {
                 None => seen[face] = Some(color),
                 Some(c) if c == color => {}
@@ -131,34 +115,41 @@ pub fn is_solved(cubies: &[(IVec3, Quat)], max_c: i32) -> bool {
 }
 
 /// Translates a kewb move (face letter) into a world-axis move.
-/// A clockwise turn of the face with direction d = -sign(d)·90° around axis |d|.
+/// A clockwise turn of the face with outward direction d is -90° around d.
 fn to_cube_move(m: KewbMove) -> CubeMove {
     use KewbMove::*;
-    let (face, quarters) = match m {
-        U => (0, 1), U2 => (0, 2), U3 => (0, 3),
-        R => (1, 1), R2 => (1, 2), R3 => (1, 3),
-        F => (2, 1), F2 => (2, 2), F3 => (2, 3),
-        D => (3, 1), D2 => (3, 2), D3 => (3, 3),
-        L => (4, 1), L2 => (4, 2), L3 => (4, 3),
-        B => (5, 1), B2 => (5, 2), B3 => (5, 3),
+    let (face, turns) = match m {
+        U => (0, 1),
+        U2 => (0, 2),
+        U3 => (0, -1),
+        R => (1, 1),
+        R2 => (1, 2),
+        R3 => (1, -1),
+        F => (2, 1),
+        F2 => (2, 2),
+        F3 => (2, -1),
+        D => (3, 1),
+        D2 => (3, 2),
+        D3 => (3, -1),
+        L => (4, 1),
+        L2 => (4, 2),
+        L3 => (4, -1),
+        B => (5, 1),
+        B2 => (5, 2),
+        B3 => (5, -1),
     };
     let dir = FACE_DIRS[face];
-    let axis_idx = if dir.x != 0 { 0 } else if dir.y != 0 { 1 } else { 2 };
-    let sign = dir[axis_idx] as f32;
-    let angle = match quarters {
-        1 => -sign * FRAC_PI_2,
-        2 => -sign * PI,
-        _ => sign * FRAC_PI_2,
+    let axis = if dir.x != 0 {
+        0
+    } else if dir.y != 0 {
+        1
+    } else {
+        2
     };
-    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
-    CubeMove {
-        rotation_axis: axes[axis_idx],
-        layer_axis: axis_idx as u8,
-        // The app's grid uses doubled coordinates: the outer layer of
-        // a 3x3 cube sits at ±2.
-        layer_value: dir[axis_idx] * 2,
-        angle,
-    }
+    let sign = dir[axis];
+    let quarters = if turns == 2 { -2 * sign } else { -sign * turns };
+    // The app's grid uses doubled coordinates: a 3x3's outer layer is at ±2.
+    CubeMove::new(axis as u8, sign * 2, 1, quarters as i8)
 }
 
 /// Solves the current state; returns the moves to apply (empty if already
@@ -179,45 +170,9 @@ pub fn solve_scene(table: &DataTable, cubies: &[(IVec3, Quat)]) -> Option<Vec<Cu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{max_coord, rotate_grid_pos};
+    use crate::cube::{apply_sim, max_coord, solved_scene, CubeMove};
+    use crate::notation::parse_alg;
     use std::sync::OnceLock;
-
-    /// Solved scene for an n x n cube, in doubled coordinates (as in the app):
-    /// only the surface cubies, identity orientation.
-    fn solved_scene(n: i32) -> Vec<(IVec3, Quat)> {
-        let max = max_coord(n);
-        let mut v = Vec::new();
-        for x in (-max..=max).step_by(2) {
-            for y in (-max..=max).step_by(2) {
-                for z in (-max..=max).step_by(2) {
-                    if x.abs() != max && y.abs() != max && z.abs() != max {
-                        continue;
-                    }
-                    v.push((IVec3::new(x, y, z), Quat::IDENTITY));
-                }
-            }
-        }
-        v
-    }
-
-    /// Applies a move to the simulated scene, the same way process_rotation's
-    /// finalize does: permutes positions and composes orientations.
-    fn apply_move_sim(cubies: &mut [(IVec3, Quat)], mv: &CubeMove) {
-        let q = Quat::from_axis_angle(mv.rotation_axis, mv.angle);
-        for (pos, rot) in cubies.iter_mut() {
-            let layer_val = match mv.layer_axis {
-                0 => pos.x,
-                1 => pos.y,
-                _ => pos.z,
-            };
-            if !mv.affects(layer_val) {
-                continue;
-            }
-            let (nx, ny, nz) = rotate_grid_pos(pos.x, pos.y, pos.z, mv.rotation_axis, mv.angle);
-            *pos = IVec3::new(nx, ny, nz);
-            *rot = (q * *rot).normalize();
-        }
-    }
 
     /// Converts doubled 3x3 coordinates (±2) to solver units (±1).
     fn halved(scene: &[(IVec3, Quat)]) -> Vec<(IVec3, Quat)> {
@@ -229,6 +184,13 @@ mod tests {
         TABLE.get_or_init(DataTable::default)
     }
 
+    fn solve_and_check(scene: &mut [(IVec3, Quat)]) -> usize {
+        let moves = solve_scene(shared_table(), &halved(scene)).expect("solver failed");
+        apply_sim(scene, &moves);
+        assert!(is_solved(scene, 2), "not solved after applying the solution");
+        moves.len()
+    }
+
     #[test]
     fn solved_scene_produces_canonical_facelets() {
         let s = scene_to_facelets(&halved(&solved_scene(3))).unwrap();
@@ -237,74 +199,66 @@ mod tests {
     }
 
     #[test]
+    fn kewb_moves_match_notation() {
+        use KewbMove::*;
+        let ours = parse_alg("U R F D L B U2 R' B2", 3).unwrap();
+        let theirs: Vec<CubeMove> = [U, R, F, D, L, B, U2, R3, B2].into_iter().map(to_cube_move).collect();
+        // Half turns may differ in direction; compare effect instead.
+        let mut a = solved_scene(3);
+        let mut b = solved_scene(3);
+        apply_sim(&mut a, &ours);
+        apply_sim(&mut b, &theirs);
+        assert_eq!(scene_to_facelets(&halved(&a)), scene_to_facelets(&halved(&b)));
+    }
+
+    #[test]
     fn single_move_is_not_solved_and_solver_undoes_it() {
         let mut scene = solved_scene(3);
-        apply_move_sim(&mut scene, &CubeMove::r(2));
+        apply_sim(&mut scene, &parse_alg("R", 3).unwrap());
         assert!(!is_solved(&scene, 2));
-
-        let moves = solve_scene(shared_table(), &halved(&scene)).unwrap();
-        for mv in &moves {
-            apply_move_sim(&mut scene, mv);
-        }
-        assert!(is_solved(&scene, 2));
+        solve_and_check(&mut scene);
     }
 
     #[test]
     fn center_twist_is_still_solved() {
-        // U U U U brings the pieces back, but the U center keeps a -360°
-        // orientation (equivalent to identity); moves that only twist centers must
-        // still count as "solved".
+        // U4 brings the pieces back but leaves the U center with a 360°
+        // orientation; invisible center twists must still count as solved.
         let mut scene = solved_scene(3);
-        for _ in 0..4 {
-            apply_move_sim(&mut scene, &CubeMove::u(2));
-        }
+        apply_sim(&mut scene, &parse_alg("U U U U", 3).unwrap());
         assert!(is_solved(&scene, 2));
     }
 
     #[test]
     fn whole_cube_rotation_keeps_solved() {
         let mut scene = solved_scene(3);
-        apply_move_sim(&mut scene, &CubeMove::x());
-        apply_move_sim(&mut scene, &CubeMove::y());
+        apply_sim(&mut scene, &parse_alg("x y", 3).unwrap());
         assert!(is_solved(&scene, 2));
-        // ...and after a whole-cube rotation, a face move still breaks it.
-        apply_move_sim(&mut scene, &CubeMove::r(2));
+        apply_sim(&mut scene, &parse_alg("R", 3).unwrap());
         assert!(!is_solved(&scene, 2));
     }
 
     #[test]
-    fn slice_moves_are_handled_via_centers() {
-        // M moves centers: the state stays solvable and detectable.
-        let mut scene = solved_scene(3);
-        apply_move_sim(&mut scene, &CubeMove::m());
-        assert!(!is_solved(&scene, 2));
-        let moves = solve_scene(shared_table(), &halved(&scene)).unwrap();
-        for mv in &moves {
-            apply_move_sim(&mut scene, mv);
+    fn slice_and_wide_moves_are_handled_via_centers() {
+        for alg in ["M", "r U f'", "E S' x", "Rw2 Uw"] {
+            let mut scene = solved_scene(3);
+            apply_sim(&mut scene, &parse_alg(alg, 3).unwrap());
+            assert!(!is_solved(&scene, 2), "{alg}");
+            solve_and_check(&mut scene);
         }
-        assert!(is_solved(&scene, 2));
     }
 
     #[test]
     fn nxn_scramble_replay_solves() {
-        // Reproduces the SOLVE/REWIND button on NxN: scramble → replay the inverse in
-        // reverse order → must end up solved.
-        for n in [2, 3, 4, 5, 6] {
+        // The REWIND path on NxN: scramble, replay the inverse → solved.
+        for n in [2, 3, 4, 5, 6, 9] {
             let max = max_coord(n);
             for seed in [0xABCDEF_u64, 7, 999] {
                 let mut scene = solved_scene(n);
-                let scramble = crate::generate_scramble(seed, crate::scramble_len(n), n);
-                for mv in &scramble {
-                    apply_move_sim(&mut scene, mv);
-                }
+                let scramble = crate::scramble::generate(seed, n);
+                apply_sim(&mut scene, &scramble);
                 let replay: Vec<CubeMove> = scramble.iter().rev().map(|m| m.inverse()).collect();
-                for mv in &replay {
-                    apply_move_sim(&mut scene, mv);
-                }
-                assert!(
-                    is_solved(&scene, max),
-                    "{n}x{n} seed {seed}: not solved after replaying the inverse"
-                );
+                apply_sim(&mut scene, &replay);
+                assert!(is_solved(&scene, max), "{n}x{n} seed {seed}");
             }
         }
     }
@@ -314,19 +268,14 @@ mod tests {
         for n in [2, 4, 5] {
             let max = max_coord(n);
             let mut scene = solved_scene(n);
-            assert!(is_solved(&scene, max), "{n}x{n} solved cube not detected");
-
-            apply_move_sim(&mut scene, &CubeMove::r(max));
-            assert!(!is_solved(&scene, max), "{n}x{n}: R not detected as unsolved");
-            for _ in 0..3 {
-                apply_move_sim(&mut scene, &CubeMove::r(max));
-            }
-            assert!(is_solved(&scene, max), "{n}x{n}: R four times isn't identity");
-
-            // Inner layer (exists from 4x4 upward).
+            assert!(is_solved(&scene, max));
+            let r = CubeMove::new(0, max, 1, -1);
+            apply_sim(&mut scene, &[r]);
+            assert!(!is_solved(&scene, max), "{n}x{n}: R not detected");
+            apply_sim(&mut scene, &[r, r, r]);
+            assert!(is_solved(&scene, max), "{n}x{n}: R4 isn't identity");
             if n >= 4 {
-                let inner = CubeMove { layer_value: max - 2, ..CubeMove::r(max) };
-                apply_move_sim(&mut scene, &inner);
+                apply_sim(&mut scene, &[CubeMove::new(0, max - 2, 1, -1)]);
                 assert!(!is_solved(&scene, max), "{n}x{n}: inner layer not detected");
             }
         }
@@ -334,33 +283,15 @@ mod tests {
 
     #[test]
     fn random_states_roundtrip_through_solver() {
-        // Key test: random sequences from ALL our moves
-        // (faces, slices, primes, whole cube) → solver → apply → solved.
-        let all_moves = [
-            CubeMove::r(2), CubeMove::ri(2), CubeMove::l(2), CubeMove::li(2),
-            CubeMove::u(2), CubeMove::ui(2), CubeMove::d(2), CubeMove::di(2),
-            CubeMove::f(2), CubeMove::fi(2), CubeMove::b(2), CubeMove::bi(2),
-            CubeMove::m(), CubeMove::mi(), CubeMove::e(), CubeMove::ei(),
-            CubeMove::s(), CubeMove::si(),
-            CubeMove::x(), CubeMove::y(), CubeMove::z(),
-        ];
-        let mut seed = 0xC0FFEE_u64;
-        for round in 0..5 {
+        // Random sequences of ALL move kinds → solver → apply → solved.
+        let pool = parse_alg("R R' L L' U U' D D' F F' B B' M M' E E' S S' x y z r u' f2", 3).unwrap();
+        let mut rng = crate::scramble::Rng::new(0xC0FFEE);
+        for round in 0..6 {
             let mut scene = solved_scene(3);
-            for _ in 0..30 {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                let mv = all_moves[(seed as usize) % all_moves.len()];
-                apply_move_sim(&mut scene, &mv);
-            }
-            let moves = solve_scene(shared_table(), &halved(&scene))
-                .unwrap_or_else(|| panic!("solver failed at round {round}"));
-            assert!(moves.len() <= 23, "solution too long: {}", moves.len());
-            for mv in &moves {
-                apply_move_sim(&mut scene, mv);
-            }
-            assert!(is_solved(&scene, 2), "not solved at round {round}");
+            let seq: Vec<CubeMove> = (0..30).map(|_| pool[rng.range(pool.len())]).collect();
+            apply_sim(&mut scene, &seq);
+            let len = solve_and_check(&mut scene);
+            assert!(len <= 23, "round {round}: solution too long ({len})");
         }
     }
 }

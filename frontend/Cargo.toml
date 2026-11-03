@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Doar ce foloseste aplicatia: fereastra + PBR + pipeline WebGL2.
-# Setul default de features (audio, glTF, animation, scene, UI, text, gizmos,
-# png...) umfla binarul WASM fara niciun beneficiu aici.
+# Only what the app uses: window + PBR + the WebGL2 pipeline. The default
+# feature set (audio, glTF, animation, scene, UI, text, gizmos, png...) bloats
+# the WASM binary for nothing. Tonemapping uses a LUT-free operator, so the
+# KTX2/zstd decoders (and their advisories) aren't compiled in either.
 bevy = { version = "0.14", default-features = false, features = [
     "bevy_winit",
     "bevy_asset",
@@ -14,25 +15,26 @@ bevy = { version = "0.14", default-features = false, features = [
     "bevy_core_pipeline",
     "bevy_pbr",
     "webgl2",
-    "tonemapping_luts",
-    "ktx2",
-    "zstd",
 ] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 uuid = { version = "1.22.0", features = ["js"] }
-bevy_egui = { version = "0.28", default-features = false, features = ["render", "default_fonts"] }
-# Solver Kociemba two-phase (pur Rust, compatibil wasm prin wasmtimer).
+# Kociemba two-phase solver (pure Rust, wasm-compatible via wasmtimer).
 kewb = "0.4.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# localStorage + interogarea dimensiunii reale a canvas-ului si a DPR-ului
-# (winit-web sub-raporteaza rezolutia fizica; o corectam manual).
-web-sys = { version = "0.3", features = ["Window", "Storage", "Document", "Element", "DomRect"] }
-# Panicurile ajung in consola browserului cu stack trace lizibil.
+# The page bridge: one exported command function + DOM CustomEvents.
+wasm-bindgen = "0.2"
+# localStorage, canvas size / DPR (winit-web under-reports the physical
+# resolution), and CustomEvent dispatch to the page.
+web-sys = { version = "0.3", features = [
+    "Window", "Storage", "Document", "Element", "DomRect",
+    "Event", "EventTarget", "CustomEvent", "CustomEventInit",
+] }
+# Panics reach the browser console with a readable stack trace.
 console_error_panic_hook = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Pe nativ (cargo test) winit are nevoie de un backend de fereastra.
+# Natively (cargo test) winit needs a windowing backend.
 bevy = { version = "0.14", default-features = false, features = ["x11"] }
 
 [profile.release]
@@ -40,6 +42,6 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 
-# Optimizare dev pentru WASM (fara aceasta, e extrem de lent in browser)
+# Dev builds are unusably slow in the browser without some optimization.
 [profile.dev]
 opt-level = 1
