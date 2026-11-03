@@ -8,6 +8,7 @@
 //! matched against a fixed list, arguments are length-capped and parsed with
 //! bounds, and the inbox itself is bounded so a runaway caller can't grow it.
 
+use crate::input::MAX_INSET;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -58,6 +59,8 @@ pub enum UiCommand {
     Settings(String),
     /// Ask for the current history as notation (for share links).
     Export,
+    /// Canvas fractions covered by page UI at the top and bottom.
+    View(f32, f32),
 }
 
 impl UiCommand {
@@ -109,6 +112,15 @@ impl UiCommand {
             "view_reset" => Self::ViewReset,
             "settings" => Self::Settings(arg.to_owned()),
             "export" => Self::Export,
+            "view" => {
+                let (top, bottom) = arg.split_once(',')?;
+                let top: f32 = top.trim().parse().ok()?;
+                let bottom: f32 = bottom.trim().parse().ok()?;
+                if !top.is_finite() || !bottom.is_finite() {
+                    return None;
+                }
+                Self::View(top.clamp(0.0, MAX_INSET), bottom.clamp(0.0, MAX_INSET))
+            }
             _ => return None,
         })
     }
@@ -280,6 +292,15 @@ mod tests {
         assert_eq!(UiCommand::parse("player", "explode"), None);
         assert_eq!(UiCommand::parse("__proto__", ""), None);
         assert_eq!(UiCommand::parse("move", &"R".repeat(5000)), None);
+    }
+
+    #[test]
+    fn view_insets_are_clamped() {
+        assert_eq!(UiCommand::parse("view", "0.1,0.2"), Some(UiCommand::View(0.1, 0.2)));
+        assert_eq!(UiCommand::parse("view", "-3,9"), Some(UiCommand::View(0.0, MAX_INSET)));
+        assert_eq!(UiCommand::parse("view", "NaN,0"), None);
+        assert_eq!(UiCommand::parse("view", "inf,0"), None);
+        assert_eq!(UiCommand::parse("view", "0.1"), None);
     }
 
     #[test]

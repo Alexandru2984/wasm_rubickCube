@@ -408,36 +408,53 @@ pub fn setup(
     size: Res<CubeSize>,
     settings: Res<Settings>,
 ) {
-    commands.spawn(Camera3dBundle {
-        transform: Transform::from_xyz(4.5, 3.4, 8.2).looking_at(Vec3::ZERO, Vec3::Y),
-        // LUT-free tonemapping: lets the build drop the KTX2/zstd stack.
-        tonemapping: bevy::core_pipeline::tonemapping::Tonemapping::AcesFitted,
-        ..default()
-    });
-    commands.insert_resource(AmbientLight { color: Color::WHITE, brightness: 260.0 });
-    commands.spawn((
-        PointLightBundle {
-            point_light: PointLight {
-                intensity: 3_600_000.0,
-                range: 400.0,
-                shadows_enabled: shadows_ok(size.0, &settings),
+    // Lights ride along with the camera, so whatever side the player orbits
+    // to, the three visible faces read as three distinct shades: key light
+    // from above-left of the viewer, a cool fill from the right.
+    commands
+        .spawn(Camera3dBundle {
+            transform: Transform::from_xyz(4.5, 3.4, 8.2).looking_at(Vec3::ZERO, Vec3::Y),
+            // LUT-free tonemapping: lets the build drop the KTX2/zstd stack.
+            tonemapping: bevy::core_pipeline::tonemapping::Tonemapping::AcesFitted,
+            // A touch brighter than Blender's default (9.7): stickers should
+            // read as bright plastic, not as a dim studio shot.
+            exposure: bevy::render::camera::Exposure { ev100: 9.4 },
+            ..default()
+        })
+        .with_children(|camera| {
+            camera.spawn((
+                DirectionalLightBundle {
+                    directional_light: DirectionalLight {
+                        illuminance: 6_000.0,
+                        shadows_enabled: shadows_ok(size.0, &settings),
+                        ..default()
+                    },
+                    transform: Transform::IDENTITY.looking_to(Vec3::new(0.05, -0.55, -1.0), Vec3::Y),
+                    // WebGL2 gets a single cascade: keep it tight around the
+                    // cube (shadows are only on up to 7x7) for crisp edges.
+                    cascade_shadow_config: bevy::pbr::CascadeShadowConfigBuilder {
+                        num_cascades: 1,
+                        minimum_distance: 0.1,
+                        first_cascade_far_bound: 45.0,
+                        maximum_distance: 45.0,
+                        overlap_proportion: 0.0,
+                    }
+                    .build(),
+                    ..default()
+                },
+                ShadowLight,
+            ));
+            camera.spawn(DirectionalLightBundle {
+                directional_light: DirectionalLight {
+                    illuminance: 2_600.0,
+                    color: Color::srgb(0.85, 0.9, 1.0),
+                    ..default()
+                },
+                transform: Transform::IDENTITY.looking_to(Vec3::new(-0.8, -0.2, -0.6), Vec3::Y),
                 ..default()
-            },
-            transform: Transform::from_xyz(6.0, 10.0, 6.0),
-            ..default()
-        },
-        ShadowLight,
-    ));
-    commands.spawn(PointLightBundle {
-        point_light: PointLight {
-            intensity: 1_400_000.0,
-            range: 400.0,
-            color: Color::srgb(0.8, 0.82, 1.0),
-            ..default()
-        },
-        transform: Transform::from_xyz(-6.0, 2.0, -4.0),
-        ..default()
-    });
+            });
+        });
+    commands.insert_resource(AmbientLight { color: Color::WHITE, brightness: 420.0 });
 
     let assets = CubeAssets::new(&mut meshes, &mut materials, settings.scheme);
     spawn_cube(&mut commands, &assets, size.0);
@@ -621,6 +638,7 @@ pub fn handle_commands(mut s: Session, mut settings: ResMut<Settings>, mut cam: 
                 PlayerOp::Close => s.close_player(),
             },
             UiCommand::ViewReset => cam.reset(),
+            UiCommand::View(top, bottom) => cam.inset = Vec2::new(top, bottom),
             UiCommand::Export => {
                 // Share links stay short: past a few hundred moves, don't bother.
                 let alg = if s.history.0.len() <= 400 { format_alg(&s.history.0, s.size.0) } else { String::new() };
@@ -655,7 +673,7 @@ pub fn rebuild_cube(
     settings: Res<Settings>,
     cubies: Query<Entity, With<GridPos>>,
     mut cam: ResMut<OrbitCamera>,
-    mut shadow_light: Query<&mut PointLight, With<ShadowLight>>,
+    mut shadow_light: Query<&mut DirectionalLight, With<ShadowLight>>,
 ) {
     if !s.size.is_changed() || s.size.is_added() {
         return;
@@ -936,7 +954,7 @@ pub fn apply_settings(
     assets: Res<CubeAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut clear: ResMut<ClearColor>,
-    mut shadow_light: Query<&mut PointLight, With<ShadowLight>>,
+    mut shadow_light: Query<&mut DirectionalLight, With<ShadowLight>>,
     mut last: Local<Option<Settings>>,
 ) {
     if last.as_ref() == Some(&*settings) {

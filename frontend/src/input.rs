@@ -21,6 +21,12 @@ pub struct OrbitCamera {
     pub rotation: Quat,
     /// Multiplier over the distance that fits the cube in the viewport.
     pub zoom: f32,
+    /// Fractions of the canvas height covered by page UI at the top (x) and
+    /// bottom (y), as reported by the page. The cube is framed in the band
+    /// between them, so it never hides behind the keypad or the player.
+    pub inset: Vec2,
+    /// Eased copy of `inset` the camera actually uses.
+    inset_now: Vec2,
 }
 
 impl OrbitCamera {
@@ -36,9 +42,13 @@ impl OrbitCamera {
 
 impl Default for OrbitCamera {
     fn default() -> Self {
-        Self { rotation: Self::default_rotation(), zoom: 1.0 }
+        Self { rotation: Self::default_rotation(), zoom: 1.0, inset: Vec2::ZERO, inset_now: Vec2::ZERO }
     }
 }
+
+/// Largest top/bottom inset the page may claim (the band never gets thinner
+/// than 30% of the canvas).
+pub const MAX_INSET: f32 = 0.35;
 
 fn apply_rotation_delta(state: &mut OrbitCamera, delta: Vec2) {
     if delta == Vec2::ZERO {
@@ -54,20 +64,24 @@ fn apply_rotation_delta(state: &mut OrbitCamera, delta: Vec2) {
     state.rotation = (pitch * state.rotation).normalize();
 }
 
-/// Distance at which an n-cube fits the viewport, whatever its aspect: on a
-/// portrait phone the horizontal field of view is the narrow one.
-fn fit_distance(n: i32, aspect: f32, fov: f32) -> f32 {
-    let half_v = fov / 2.0;
-    let half_h = (half_v.tan() * aspect.max(0.1)).atan();
-    let half = half_v.min(half_h);
-    n as f32 * 1.02 / half.sin()
+/// Distance at which an n-cube fits the visible band, whatever the aspect:
+/// on a portrait phone the horizontal field of view is the narrow one.
+/// `band` is the fraction of the canvas height left free by the page UI.
+fn fit_distance(n: i32, aspect: f32, fov: f32, band: f32) -> f32 {
+    let tan_v = (fov / 2.0).tan();
+    let half_v = (tan_v * band).atan();
+    let half_h = (tan_v * aspect.max(0.1)).atan();
+    // Bounding sphere (sqrt(3)/2 * n) plus a little air.
+    n as f32 * 0.92 / half_v.min(half_h).sin()
 }
 
 pub fn update_camera_transform(
-    state: Res<OrbitCamera>,
+    mut state: ResMut<OrbitCamera>,
     size: Res<CubeSize>,
+    time: Res<Time<Real>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut query: Query<(&mut Transform, &Projection), With<Camera3d>>,
+    mut redraw: EventWriter<bevy::window::RequestRedraw>,
 ) {
     let Ok((mut transform, projection)) = query.get_single_mut() else { return };
     let aspect = windows.get_single().map(|w| w.width() / w.height().max(1.0)).unwrap_or(1.0);
@@ -75,9 +89,24 @@ pub fn update_camera_transform(
         Projection::Perspective(p) => p.fov,
         _ => std::f32::consts::FRAC_PI_4,
     };
-    let radius = fit_distance(size.0, aspect, fov) * state.zoom;
-    transform.translation = state.rotation * Vec3::new(0.0, 0.0, radius);
-    transform.look_at(Vec3::ZERO, state.rotation * Vec3::Y);
+
+    // Ease toward the page's latest insets (keypad sliding in, etc.).
+    let target = state.inset;
+    let gap = target - state.inset_now;
+    if gap.length_squared() > 1e-8 {
+        let k = 1.0 - (-time.delta_seconds().min(0.1) * 10.0).exp();
+        state.inset_now = if gap.length() < 0.001 { target } else { state.inset_now + gap * k };
+        redraw.send(bevy::window::RequestRedraw);
+    }
+    let (top, bottom) = (state.inset_now.x, state.inset_now.y);
+    let band = (1.0 - top - bottom).max(0.3);
+
+    let distance = fit_distance(size.0, aspect, fov, band) * state.zoom;
+    // Slide the camera along its own up axis so the cube's center projects
+    // to the middle of the free band rather than the middle of the canvas.
+    let shift = (fov / 2.0).tan() * (bottom - top) * distance;
+    transform.translation = state.rotation * Vec3::new(0.0, -shift, distance);
+    transform.rotation = state.rotation;
 }
 
 pub fn camera_zoom(mut state: ResMut<OrbitCamera>, mut scroll: EventReader<MouseWheel>) {
@@ -405,9 +434,20 @@ mod tests {
     #[test]
     fn fit_distance_grows_on_portrait() {
         let fov = std::f32::consts::FRAC_PI_4;
-        let landscape = fit_distance(3, 16.0 / 9.0, fov);
-        let portrait = fit_distance(3, 9.0 / 19.5, fov);
+        let landscape = fit_distance(3, 16.0 / 9.0, fov, 1.0);
+        let portrait = fit_distance(3, 9.0 / 19.5, fov, 1.0);
         assert!(portrait > landscape * 1.8, "portrait {portrait} vs landscape {landscape}");
+    }
+
+    #[test]
+    fn fit_distance_backs_off_for_a_thin_band() {
+        let fov = std::f32::consts::FRAC_PI_4;
+        let full = fit_distance(3, 16.0 / 9.0, fov, 1.0);
+        let half = fit_distance(3, 16.0 / 9.0, fov, 0.5);
+        assert!(half > full * 1.8);
+        // The bounding sphere always fits.
+        let tan_v = (fov / 2.0).tan();
+        assert!(3.0 * 0.866 / full < (tan_v).atan().sin());
     }
 
     #[test]

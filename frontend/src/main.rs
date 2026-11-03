@@ -27,16 +27,26 @@ fn main() {
     let settings = game::Settings::from_storage();
 
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Rubik's Cube".into(),
-                canvas: Some("#bevy".to_owned()),
-                fit_canvas_to_parent: true,
-                prevent_default_event_handling: true,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Rubik's Cube".into(),
+                        canvas: Some("#bevy".to_owned()),
+                        fit_canvas_to_parent: true,
+                        prevent_default_event_handling: true,
+                        ..default()
+                    }),
+                    ..default()
+                })
+                // Release builds keep the visitor's console quiet: adapter
+                // and feature-detection chatter is only useful while developing.
+                .set(bevy::log::LogPlugin {
+                    level: if cfg!(debug_assertions) { bevy::log::Level::INFO } else { bevy::log::Level::ERROR },
+                    filter: "wgpu=error,naga=warn".into(),
+                    ..default()
+                }),
+        )
         // Render on demand: the engine sleeps while nothing moves (battery on
         // phones) and is woken by input, animation, or a page command.
         .insert_resource(WinitSettings {
