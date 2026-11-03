@@ -115,7 +115,17 @@ pub struct Game {
     pub check_solved: bool,
     /// Page asked for a full re-announce (catalog + state).
     pub announce: bool,
+    /// Every turn physically made since the scramble finished (rotations,
+    /// undos and redos included, in order). Replaying the scramble and then
+    /// this log must solve the cube: it's the proof a daily result is sent
+    /// with, checked by the leaderboard server.
+    pub solution: Vec<CubeMove>,
+    pub solution_overflow: bool,
 }
+
+/// Longest solution log kept; past this the proof is dropped (no ranked
+/// submission), since no real solve needs that many turns.
+pub const MAX_SOLUTION_LOG: usize = 2000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PlayerKind {
@@ -788,12 +798,15 @@ pub fn apply_pending(mut s: Session, mut cubies: Query<(&mut GridPos, &mut Trans
         }
     }
     if ready {
-        s.game.phase = Phase::Ready;
-        emit_ready(&s.game);
+        mark_ready(&mut s.game);
     }
 }
 
-fn emit_ready(game: &Game) {
+/// Scrambled and settled: the timer arms and the solution log starts.
+fn mark_ready(game: &mut Game) {
+    game.phase = Phase::Ready;
+    game.solution.clear();
+    game.solution_overflow = false;
     bridge::emit("event", &Json::new().str("type", "ready").str("mode", &game.mode.code()).done());
 }
 
@@ -883,6 +896,18 @@ pub fn process_rotation(
             }
         }
         s.game.check_solved = true;
+        // Log the turn for the solve proof. Scramble moves land while the
+        // phase is still Scrambling, solver playback runs in Idle: neither
+        // is logged. A drag released back to 0° isn't a turn.
+        if matches!(s.game.phase, Phase::Ready | Phase::Running) && state.mv.quarters != 0 && !s.game.solution_overflow
+        {
+            if s.game.solution.len() < MAX_SOLUTION_LOG {
+                s.game.solution.push(state.mv);
+            } else {
+                s.game.solution.clear();
+                s.game.solution_overflow = true;
+            }
+        }
     } else if s.active.0.is_none() && s.pointer.manual.is_none() {
         let Some((mv, record)) = s.queue.0.pop_front() else { return };
         if record {
@@ -924,8 +949,7 @@ pub fn update_phase(mut s: Session, cubies: Query<(&GridPos, &Transform)>) {
     }
     match s.game.phase {
         Phase::Scrambling => {
-            s.game.phase = Phase::Ready;
-            emit_ready(&s.game);
+            mark_ready(&mut s.game);
         }
         Phase::Running if s.game.check_solved => {
             let scene: Vec<(IVec3, Quat)> = cubies.iter().map(|(gp, tf)| (gp.0, tf.rotation)).collect();
@@ -939,6 +963,10 @@ pub fn update_phase(mut s: Session, cubies: Query<(&GridPos, &Transform)>) {
                     .num("n", s.size.0)
                     .str("mode", &s.game.mode.code())
                     .str("scramble", &s.game.scramble)
+                    .str(
+                        "sol",
+                        &if s.game.solution_overflow { String::new() } else { format_alg(&s.game.solution, s.size.0) },
+                    )
                     .done();
                 bridge::emit("event", &ev);
             }

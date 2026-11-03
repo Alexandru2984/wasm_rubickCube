@@ -86,6 +86,25 @@ pub fn generate(seed: u64, n: i32) -> Vec<CubeMove> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The leaderboard server (backend/, Gleam) regenerates the daily
+    /// scramble to verify submitted solves. Both test suites pin the same
+    /// strings: change the generator here and backend/test/cube_test.gleam
+    /// must change with it, or every daily submission gets rejected.
+    #[test]
+    fn daily_scrambles_match_the_server() {
+        use crate::bridge::daily_seed;
+        use crate::notation::format_alg;
+        let cases = [
+            (0, 13_888_771_472_215_769_088u64, "F B' R L U F' U' R2 U F' L' B2 U' D B F L2 R B D U' R' F B' R2"),
+            (20_395, 13_586_762_507_681_506_655, "R D R2 L2 U' D L D B L R U' D2 L2 D2 L U D2 R L U' L' D2 L2 D"),
+            (21_000, 5_924_762_292_955_263_720, "U2 F' U2 R' U' D' B F L' D' L2 D R' B2 U2 B' D' R' B' U F R' F2 L D"),
+        ];
+        for (day, seed, scramble) in cases {
+            assert_eq!(daily_seed(day), seed, "day {day}");
+            assert_eq!(format_alg(&generate(seed, 3), 3), scramble, "day {day}");
+        }
+    }
     use crate::cube::{apply_sim, solved_scene};
     use crate::solver::is_solved;
 
