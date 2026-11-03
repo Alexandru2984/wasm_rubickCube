@@ -1,0 +1,160 @@
+// UI strings. Keys are looked up with t(key, vars); {name} placeholders are
+// filled from vars. Every string ends up in textContent, never in HTML.
+
+export const STRINGS = {
+  en: {
+    loading: 'Loading…', downloading: 'Downloading the cube… {pct}%', starting: 'Starting the 3D engine…',
+    loadFailed: 'Loading failed. Please reload the page.', noWebgl: 'Your browser doesn’t support WebGL2, which the cube needs.',
+    slowLoad: 'This is taking a while. If it stays stuck, try:', unexpected: 'Something went wrong.', reload: 'Reload', clearCache: 'Clear cache',
+    size: 'Cube size', smaller: 'Smaller cube', bigger: 'Bigger cube', menu: 'Menu', close: 'Close', controls: 'Cube controls',
+    undo: 'Undo', redo: 'Redo', scramble: 'Scramble', solve: 'Solve', hint: 'Hint', rewind: 'Rewind', moves: 'Moves', more: 'More',
+    resetCube: 'Reset cube', resetView: 'Reset view', fullscreen: 'Fullscreen', shareState: 'Share this cube',
+    keypad: 'Move keypad', player: 'Move player', play: 'Play', pause: 'Pause', toStart: 'Back to start', toEnd: 'Jump to end',
+    prevMove: 'Previous move', nextMove: 'Next move', inspection: 'Inspection',
+    daily: 'Daily challenge', trainer: 'Algorithm trainer', algLab: 'Algorithm lab', stats: 'Statistics', awards: 'Achievements',
+    settings: 'Settings', help: 'Help & controls', sizeTitle: 'Cube size',
+    menuDaily: 'Same scramble for everyone, every day', menuTrainer: 'Drill all 78 OLL & PLL cases',
+    menuAlgs: 'Type, play and share algorithms', menuStats: 'Averages, PBs, history', menuAwards: 'Unlock all of them',
+    menuSettings: 'Colors, sound, inspection…', menuHelp: 'Controls & notation', menuShare: 'Send this cube to a friend',
+    hintIdle: 'Drag a sticker to turn a layer · drag outside to orbit · pinch or scroll to zoom',
+    hintKeys: 'Keys: R L U D F B · M E S · x y z · Shift = prime · Space = scramble',
+    statusReady: 'Timer starts on your first turn', statusThinking: 'Finding a solution…',
+    modeScramble: 'Scramble', modeDaily: 'Daily #{n}', modeTrainer: '{name}',
+    solved: 'Solved!', share: 'Share', again: 'Again', movesN: '{n} moves', tps: '{v} TPS',
+    newPb: 'New personal best!', newPbAo5: 'New best ao5!', plus2: '+2', dnf: 'DNF', inspectionOver: 'Inspection over 15 s',
+    dailyDone: 'Daily #{n} complete!', ao5: 'ao5', ao12: 'ao12', ao100: 'ao100', best: 'Best', mean: 'Mean', count: 'Solves',
+    dailyTitle: 'Daily challenge #{n}', dailyIntro: 'One scramble, the same for everyone today. Your first attempt counts.',
+    dailyStart: 'Start today’s challenge', dailyPractice: 'Practice again (not counted)', dailyYour: 'Your result',
+    dailyNext: 'Next challenge in {t}', streakDays: '{n}-day streak', dailyShare: 'Share result', dailyHistory: 'Last 7 days',
+    trPll: 'PLL', trOll: 'OLL', trPatterns: 'Patterns', trAuf: 'Random angle (AUF)', trAufHint: 'Recognize the case from any side',
+    trPick: 'Pick a case: the cube is set to it and the algorithm solves it. The timer starts on your first turn.',
+    trPatternsIntro: 'Classic patterns, applied to a solved cube.', trAgain: 'Again', trRandom: 'Random case', trShowMe: 'Show me',
+    trHideAlg: 'Hide algorithm', trBest: 'best {t}',
+    algIntro: 'Type any algorithm in standard notation: R U R\' U\', wide moves (Rw, 3Fw), slices (M E S, 2R), rotations (x y z), repeats like (R U R\' U\')6.',
+    algPlaceholder: 'e.g. R U R\' U\' R\' F R2 U\' R\' U\' R U R\' F\'',
+    algPlay: 'Play on cube', algPractice: 'Set up & time', algState: 'Show resulting state', algShare: 'Share link', algExamples: 'Examples',
+    algScramble: 'Time a scramble', algScrambleIntro: 'Paste a scramble (e.g. from a competition) to time a solve with it.', algScrambleGo: 'Scramble with this',
+    errEmpty: 'Type some moves first.', errTooLong: 'That’s too long.', errTooMany: 'Too many moves (max 1000).', errUnbalanced: 'Unbalanced parentheses.',
+    errUnexpected: 'Unexpected character at position {p}.', errBadLayer: 'That layer doesn’t exist on a {n}×{n} cube (position {p}).',
+    errSliceEven: 'M, E and S only exist on odd cubes (position {p}).', errAlreadySolved: 'The cube is already solved.', errGeneric: 'That didn’t work.',
+    stSize: 'Size', stChart: 'Last {n} solves', stList: 'History', stEmpty: 'No solves yet on {n}×{n}. Scramble and solve to start tracking.',
+    stExportCsv: 'CSV', stExportJson: 'Backup', stImport: 'Restore', stClear: 'Clear', stClearConfirm: 'Delete all {n}×{n} solves? This can’t be undone.',
+    stImported: 'Imported {n} solves', stImportBad: 'That file doesn’t look like a cube backup.', stDelete: 'Delete', stOk: 'OK',
+    awIntro: '{a} of {b} unlocked',
+    seLang: 'Language', seInspection: 'WCA inspection', seInspectionHint: '15 s to look; +2 after 15 s, DNF after 17 s',
+    seSound: 'Sound', seHaptics: 'Vibration', seHapticsHint: 'On phones that support it', seHints: 'Show hints',
+    seSaver: 'Battery saver', seSaverHint: 'Lower resolution, no shadows', seSpeed: 'Turn speed', seColors: 'Sticker colors',
+    seBg: 'Background', seData: 'Data', seResetAll: 'Erase all data', seResetConfirm: 'Erase all solves, settings and achievements on this device?',
+    schemes: ['Classic', 'Vivid', 'Colorblind', 'Pastel', 'Mono'],
+    hpMouse: 'Mouse & touch', hpDragSticker: 'Drag a sticker', hpDragSticker2: 'turn that layer', hpDragOut: 'Drag outside', hpDragOut2: 'orbit the camera',
+    hpZoom: 'Scroll / pinch', hpZoom2: 'zoom', hpKeyboard: 'Keyboard', hpFaces: 'turn a face (Shift = counter-clockwise, Alt = wide)',
+    hpSlices: 'middle slices (odd cubes)', hpRot: 'rotate the whole cube', hpSpace: 'scramble', hpBack: 'undo', hpUndo: 'undo / redo',
+    hpBrackets: 'smaller / bigger cube', hpQ: 'this help', hpNotation: 'Notation',
+    hpNotationText: 'R = right face clockwise, R\' = counter-clockwise, R2 = half turn. Rw (or r) turns two layers, 3Rw three; 2R turns only the second layer. x, y, z rotate the whole cube.',
+    hpAbout: 'About', hpAboutText: 'A real-time 3D cube built with Rust and the Bevy engine, compiled to WebAssembly. Your data stays on this device.',
+    hpSource: 'Source code on GitHub',
+    copied: 'Copied to clipboard', shareFail: 'Couldn’t share', tooLongShare: 'This cube has too many moves to fit in a link.',
+    updateReady: 'A new version is ready', updateNow: 'Update', welcome: 'Welcome!', welcomeSub: 'Drag stickers to turn. Try today’s challenge?',
+    tryDaily: 'Daily', unlocked: 'Achievement unlocked', offlineReady: 'Ready to work offline',
+    shareDaily: '🧊 Cube Daily #{n}\n⏱ {t} · {m} moves{streak}', shareStreak: '\n🔥 {n}-day streak', shareSolve: '🧊 {size} solved in {t} ({m} moves)',
+    ach: {
+      first: ['First solve', 'Finish any timed solve'], ten: ['Getting serious', '10 timed solves'], fifty: ['Dedicated', '50 timed solves'],
+      hundred: ['Centurion', '100 timed solves'], sub60: ['Sub-minute', '3×3 under 60 s'], sub30: ['Sub-30', '3×3 under 30 s'],
+      sub20: ['Speedcuber', '3×3 under 20 s'], sub10: ['Legend', '3×3 under 10 s'], pocket: ['Pocket cube', 'Solve a 2×2'],
+      big: ['Big cube', 'Solve a 5×5 or bigger'], giant: ['Giant', 'Solve a 7×7 or bigger'], daily: ['Daily player', 'Finish a daily challenge'],
+      streak3: ['On fire', '3-day daily streak'], streak7: ['Weekly habit', '7-day daily streak'], streak30: ['Unstoppable', '30-day daily streak'],
+      trainer10: ['Student', 'Solve 10 different trainer cases'], pllAll: ['PLL master', 'Solve all 21 PLL cases'],
+      efficient: ['Efficient', '3×3 in under 60 moves'], tps: ['Fast fingers', '3 turns per second on a 3×3'], owl: ['Night owl', 'Solve between midnight and 5 am'],
+      solver: ['Curious', 'Watch the solver at work'], pattern: ['Artist', 'Make a pattern'], sharer: ['Show-off', 'Share a result'],
+    },
+  },
+  ro: {
+    loading: 'Se încarcă…', downloading: 'Se descarcă cubul… {pct}%', starting: 'Pornește motorul 3D…',
+    loadFailed: 'Încărcarea a eșuat. Reîncarcă pagina.', noWebgl: 'Browserul tău nu suportă WebGL2, necesar pentru cub.',
+    slowLoad: 'Se încarcă anevoios. Dacă rămâne blocat, încearcă:', unexpected: 'A apărut o eroare neașteptată.', reload: 'Reîncarcă', clearCache: 'Golește cache',
+    size: 'Mărimea cubului', smaller: 'Cub mai mic', bigger: 'Cub mai mare', menu: 'Meniu', close: 'Închide', controls: 'Comenzi cub',
+    undo: 'Înapoi', redo: 'Refă', scramble: 'Amestecă', solve: 'Rezolvă', hint: 'Indiciu', rewind: 'Derulează', moves: 'Mutări', more: 'Mai mult',
+    resetCube: 'Resetează cubul', resetView: 'Resetează vederea', fullscreen: 'Ecran complet', shareState: 'Trimite cubul ăsta',
+    keypad: 'Tastatură mutări', player: 'Player mutări', play: 'Pornește', pause: 'Pauză', toStart: 'La început', toEnd: 'La final',
+    prevMove: 'Mutarea anterioară', nextMove: 'Mutarea următoare', inspection: 'Inspecție',
+    daily: 'Provocarea zilei', trainer: 'Antrenor algoritmi', algLab: 'Laborator algoritmi', stats: 'Statistici', awards: 'Realizări',
+    settings: 'Setări', help: 'Ajutor și comenzi', sizeTitle: 'Mărimea cubului',
+    menuDaily: 'Același scramble pentru toți, în fiecare zi', menuTrainer: 'Exersează toate cele 78 de cazuri OLL și PLL',
+    menuAlgs: 'Scrie, rulează și trimite algoritmi', menuStats: 'Medii, recorduri, istoric', menuAwards: 'Deblochează-le pe toate',
+    menuSettings: 'Culori, sunet, inspecție…', menuHelp: 'Comenzi și notație', menuShare: 'Trimite cubul unui prieten',
+    hintIdle: 'Trage un sticker ca să rotești stratul · trage în gol ca să rotești vederea · pinch sau scroll pentru zoom',
+    hintKeys: 'Taste: R L U D F B · M E S · x y z · Shift = invers · Space = amestecă',
+    statusReady: 'Cronometrul pornește la prima mutare', statusThinking: 'Caut o soluție…',
+    modeScramble: 'Scramble', modeDaily: 'Ziua #{n}', modeTrainer: '{name}',
+    solved: 'Rezolvat!', share: 'Trimite', again: 'Din nou', movesN: '{n} mutări', tps: '{v} TPS',
+    newPb: 'Record personal nou!', newPbAo5: 'Cel mai bun ao5!', plus2: '+2', dnf: 'DNF', inspectionOver: 'Inspecție peste 15 s',
+    dailyDone: 'Provocarea #{n} terminată!', ao5: 'ao5', ao12: 'ao12', ao100: 'ao100', best: 'Record', mean: 'Medie', count: 'Rezolvări',
+    dailyTitle: 'Provocarea zilei #{n}', dailyIntro: 'Un singur scramble, același pentru toată lumea azi. Contează prima încercare.',
+    dailyStart: 'Începe provocarea de azi', dailyPractice: 'Exersează din nou (nu contează)', dailyYour: 'Rezultatul tău',
+    dailyNext: 'Următoarea provocare în {t}', streakDays: '{n} zile la rând', dailyShare: 'Trimite rezultatul', dailyHistory: 'Ultimele 7 zile',
+    trPll: 'PLL', trOll: 'OLL', trPatterns: 'Modele', trAuf: 'Unghi aleator (AUF)', trAufHint: 'Recunoaște cazul din orice parte',
+    trPick: 'Alege un caz: cubul se așază în starea lui, iar algoritmul îl rezolvă. Cronometrul pornește la prima mutare.',
+    trPatternsIntro: 'Modele clasice, aplicate pe un cub rezolvat.', trAgain: 'Din nou', trRandom: 'Caz aleator', trShowMe: 'Arată-mi',
+    trHideAlg: 'Ascunde algoritmul', trBest: 'record {t}',
+    algIntro: 'Scrie orice algoritm în notație standard: R U R\' U\', mutări wide (Rw, 3Fw), felii (M E S, 2R), rotații (x y z), repetări ca (R U R\' U\')6.',
+    algPlaceholder: 'ex. R U R\' U\' R\' F R2 U\' R\' U\' R U R\' F\'',
+    algPlay: 'Rulează pe cub', algPractice: 'Pregătește și cronometrează', algState: 'Arată starea rezultată', algShare: 'Link de trimis', algExamples: 'Exemple',
+    algScramble: 'Cronometrează un scramble', algScrambleIntro: 'Lipește un scramble (de ex. de la un concurs) ca să cronometrezi o rezolvare.', algScrambleGo: 'Amestecă așa',
+    errEmpty: 'Scrie întâi niște mutări.', errTooLong: 'E prea lung.', errTooMany: 'Prea multe mutări (maxim 1000).', errUnbalanced: 'Paranteze neînchise.',
+    errUnexpected: 'Caracter neașteptat la poziția {p}.', errBadLayer: 'Stratul ăsta nu există pe un cub {n}×{n} (poziția {p}).',
+    errSliceEven: 'M, E și S există doar pe cuburi impare (poziția {p}).', errAlreadySolved: 'Cubul e deja rezolvat.', errGeneric: 'N-a mers.',
+    stSize: 'Mărime', stChart: 'Ultimele {n} rezolvări', stList: 'Istoric', stEmpty: 'Nicio rezolvare încă pe {n}×{n}. Amestecă și rezolvă ca să înceapă statisticile.',
+    stExportCsv: 'CSV', stExportJson: 'Backup', stImport: 'Restaurează', stClear: 'Șterge', stClearConfirm: 'Ștergi toate rezolvările {n}×{n}? Nu se poate anula.',
+    stImported: 'Am importat {n} rezolvări', stImportBad: 'Fișierul nu pare un backup de cub.', stDelete: 'Șterge', stOk: 'OK',
+    awIntro: '{a} din {b} deblocate',
+    seLang: 'Limba', seInspection: 'Inspecție WCA', seInspectionHint: '15 s de privit; +2 după 15 s, DNF după 17 s',
+    seSound: 'Sunet', seHaptics: 'Vibrații', seHapticsHint: 'Pe telefoanele care suportă', seHints: 'Arată indicii',
+    seSaver: 'Economie baterie', seSaverHint: 'Rezoluție mai mică, fără umbre', seSpeed: 'Viteza rotațiilor', seColors: 'Culorile stickerelor',
+    seBg: 'Fundal', seData: 'Date', seResetAll: 'Șterge toate datele', seResetConfirm: 'Ștergi toate rezolvările, setările și realizările de pe dispozitiv?',
+    schemes: ['Clasic', 'Viu', 'Daltonism', 'Pastel', 'Mono'],
+    hpMouse: 'Mouse și touch', hpDragSticker: 'Trage un sticker', hpDragSticker2: 'rotește stratul', hpDragOut: 'Trage în gol', hpDragOut2: 'rotește vederea',
+    hpZoom: 'Scroll / pinch', hpZoom2: 'zoom', hpKeyboard: 'Tastatură', hpFaces: 'rotește o față (Shift = invers, Alt = wide)',
+    hpSlices: 'feliile din mijloc (cuburi impare)', hpRot: 'rotește tot cubul', hpSpace: 'amestecă', hpBack: 'înapoi', hpUndo: 'înapoi / refă',
+    hpBrackets: 'cub mai mic / mai mare', hpQ: 'acest ajutor', hpNotation: 'Notație',
+    hpNotationText: 'R = fața dreaptă în sens orar, R\' = invers, R2 = jumătate de tură. Rw (sau r) rotește două straturi, 3Rw trei; 2R rotește doar al doilea strat. x, y, z rotesc tot cubul.',
+    hpAbout: 'Despre', hpAboutText: 'Un cub 3D în timp real construit în Rust cu motorul Bevy, compilat în WebAssembly. Datele tale rămân pe acest dispozitiv.',
+    hpSource: 'Codul sursă pe GitHub',
+    copied: 'Copiat în clipboard', shareFail: 'N-am putut trimite', tooLongShare: 'Cubul are prea multe mutări pentru un link.',
+    updateReady: 'O versiune nouă e gata', updateNow: 'Actualizează', welcome: 'Bun venit!', welcomeSub: 'Trage de stickere ca să rotești. Încerci provocarea zilei?',
+    tryDaily: 'Provocarea', unlocked: 'Realizare deblocată', offlineReady: 'Gata să meargă offline',
+    shareDaily: '🧊 Cube Daily #{n}\n⏱ {t} · {m} mutări{streak}', shareStreak: '\n🔥 {n} zile la rând', shareSolve: '🧊 {size} rezolvat în {t} ({m} mutări)',
+    ach: {
+      first: ['Prima rezolvare', 'Termină o rezolvare cronometrată'], ten: ['Pe bune', '10 rezolvări cronometrate'], fifty: ['Dedicat', '50 de rezolvări cronometrate'],
+      hundred: ['Centurion', '100 de rezolvări cronometrate'], sub60: ['Sub un minut', '3×3 sub 60 s'], sub30: ['Sub 30', '3×3 sub 30 s'],
+      sub20: ['Speedcuber', '3×3 sub 20 s'], sub10: ['Legendă', '3×3 sub 10 s'], pocket: ['Cub de buzunar', 'Rezolvă un 2×2'],
+      big: ['Cub mare', 'Rezolvă un 5×5 sau mai mare'], giant: ['Gigant', 'Rezolvă un 7×7 sau mai mare'], daily: ['Jucător zilnic', 'Termină o provocare a zilei'],
+      streak3: ['În flăcări', '3 zile la rând'], streak7: ['Obicei', '7 zile la rând'], streak30: ['De neoprit', '30 de zile la rând'],
+      trainer10: ['Student', 'Rezolvă 10 cazuri diferite din antrenor'], pllAll: ['Maestru PLL', 'Rezolvă toate cele 21 de cazuri PLL'],
+      efficient: ['Eficient', '3×3 în sub 60 de mutări'], tps: ['Degete rapide', '3 mutări pe secundă pe un 3×3'], owl: ['Bufniță', 'Rezolvă între miezul nopții și 5'],
+      solver: ['Curios', 'Privește solverul la lucru'], pattern: ['Artist', 'Fă un model'], sharer: ['Fălos', 'Trimite un rezultat'],
+    },
+  },
+};
+
+let lang = 'en';
+
+export function setLang(l) {
+  lang = STRINGS[l] ? l : 'en';
+  document.documentElement.lang = lang;
+}
+
+export function getLang() {
+  return lang;
+}
+
+export function t(key, vars) {
+  const table = STRINGS[lang];
+  let s = table[key] ?? STRINGS.en[key] ?? key;
+  if (typeof s !== 'string') return s;
+  if (vars) s = s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
+  return s;
+}
+
+export function achText(id) {
+  return (STRINGS[lang].ach[id] || STRINGS.en.ach[id] || [id, '']);
+}

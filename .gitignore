@@ -28,3 +28,5 @@ Thumbs.db
 
 # Project notes
 prompt.md
+frontend/dist-dev/
+__pycache__/

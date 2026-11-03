@@ -1,182 +1,202 @@
 <!DOCTYPE html>
-<html lang="ro">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="description" content="Cub Rubik 3D interactiv, direct în browser — Rust + Bevy + WebAssembly." />
-    <meta name="theme-color" content="#1a1a2e" />
-    <title>Rubik's Cube</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Rubik's Cube 3D — play, time and learn online</title>
+    <meta name="description" content="Free 3D Rubik's Cube in your browser: 2×2 up to 20×20, speedcubing timer with WCA inspection, daily challenge, step-by-step solver and an OLL/PLL trainer. Works offline." />
+    <meta name="theme-color" content="#0f1020" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Cube" />
 
     <link data-trunk rel="copy-file" href="assets/favicon.svg" />
     <link data-trunk rel="copy-file" href="assets/icon-512.png" />
     <link data-trunk rel="copy-file" href="assets/icon-180.png" />
     <link data-trunk rel="copy-file" href="assets/manifest.webmanifest" />
-    <link data-trunk rel="copy-file" href="assets/sw.js" />
+    <link data-trunk rel="copy-file" href="assets/service-worker.js" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icon-180.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
 
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body {
-        /* Inaltime definita: fit_canvas_to_parent masoara parintele (body),
-           iar fara height explicit body-ul colapseaza si canvas-ul iese scurt. */
-        width: 100%;
-        height: 100%;
-        background: #1a1a2e;
-        overflow: hidden;
-        overscroll-behavior: none;
-        -webkit-user-select: none;
-        user-select: none;
-        -webkit-touch-callout: none;
-        touch-action: none;
-      }
-      canvas {
-        display: block;
-        width: 100%;
-        height: 100%;
-        touch-action: none;
-        -webkit-tap-highlight-color: transparent;
-      }
-
-      /* ── Ecran de incarcare ── */
-      #loader {
-        position: fixed;
-        inset: 0;
-        background: #1a1a2e;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 22px;
-        z-index: 10;
-        transition: opacity 0.45s ease;
-        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-      }
-      #loader.done { opacity: 0; pointer-events: none; }
-      .ldr-cube {
-        display: grid;
-        grid-template-columns: repeat(3, 22px);
-        gap: 4px;
-        background: #17181f;
-        padding: 7px;
-        border-radius: 9px;
-        animation: ldr-spin 2.4s ease-in-out infinite;
-      }
-      .ldr-cube i { width: 22px; height: 22px; border-radius: 4px; display: block; }
-      @keyframes ldr-spin {
-        0%, 20%   { transform: rotate(0deg); }
-        45%, 70%  { transform: rotate(90deg); }
-        95%, 100% { transform: rotate(180deg); }
-      }
-      @media (prefers-reduced-motion: reduce) { .ldr-cube { animation: none; } }
-      #ldr-label { color: #9aa0c0; font-size: 14px; }
-      .ldr-track {
-        width: min(260px, 60vw);
-        height: 6px;
-        border-radius: 3px;
-        background: #26283e;
-        overflow: hidden;
-      }
-      #ldr-bar {
-        width: 0%;
-        height: 100%;
-        border-radius: 3px;
-        background: linear-gradient(90deg, #0045ad, #008c38, #ffd600, #ff5900, #b81205);
-        transition: width 0.2s ease;
-      }
-    </style>
-    <script defer src="https://analytics.micutu.com/script.js" data-website-id="ba3c0e81-cd09-43aa-8497-690b000af189"></script>
+    <!-- ui/ is copied as-is and renamed to ui-<content hash>/ by tools/postbuild.py,
+         which also adds SRI hashes and module preloads. -->
+    <link data-trunk rel="copy-dir" href="ui" />
+    <link rel="stylesheet" href="/ui/app.css" />
+    <script type="module" src="/ui/app.js"></script>
+    <script defer src="https://analytics.micutu.com/script.js" data-website-id="ba3c0e81-cd09-43aa-8497-690b000af189" data-domains="cube.micutu.com" data-do-not-track="true"></script>
   </head>
   <body>
-    <div id="loader">
-      <div class="ldr-cube" aria-hidden="true">
-        <i style="background:#008c38"></i><i style="background:#ffd600"></i><i style="background:#b81205"></i>
-        <i style="background:#ffffff"></i><i style="background:#0045ad"></i><i style="background:#ff5900"></i>
-        <i style="background:#0045ad"></i><i style="background:#b81205"></i><i style="background:#ffffff"></i>
+    <!-- Icon sprite (hand-drawn 24×24 strokes, referenced with <use>). -->
+    <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true">
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+      <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></symbol>
+      <symbol id="i-dice" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.5" cy="8.5" r="1.2" class="f"/><circle cx="15.5" cy="15.5" r="1.2" class="f"/><circle cx="15.5" cy="8.5" r="1.2" class="f"/><circle cx="8.5" cy="15.5" r="1.2" class="f"/><circle cx="12" cy="12" r="1.2" class="f"/></symbol>
+      <symbol id="i-solve" viewBox="0 0 24 24"><path d="m12 3 1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7-4.7-1.8 4.7-1.8z"/><path d="m19 15 .8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></symbol>
+      <symbol id="i-rewind" viewBox="0 0 24 24"><path d="M11 19 2 12l9-7z"/><path d="m22 19-9-7 9-7z"/></symbol>
+      <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/></symbol>
+      <symbol id="i-keypad" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M8 16h8M10 13h4"/></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></symbol>
+      <symbol id="i-cap" viewBox="0 0 24 24"><path d="m2 9 10-5 10 5-10 5z"/><path d="M6 11v5c0 1.5 3 3 6 3s6-1.5 6-3v-5"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9 7 7M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></symbol>
+      <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 2-2.5 4M12 17h.01"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" class="f"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 4h3v16H7zM14 4h3v16h-3z" class="f"/></symbol>
+      <symbol id="i-next" viewBox="0 0 24 24"><path d="m6 5 9 7-9 7z" class="f"/><path d="M18 5v14"/></symbol>
+      <symbol id="i-prev" viewBox="0 0 24 24"><path d="m18 5-9 7 9 7z" class="f"/><path d="M6 5v14"/></symbol>
+      <symbol id="i-first" viewBox="0 0 24 24"><path d="m19 5-7 7 7 7M12 5l-7 7 7 7"/></symbol>
+      <symbol id="i-last" viewBox="0 0 24 24"><path d="m5 5 7 7-7 7M12 5l7 7-7 7"/></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.2 10.9 7.6-4.6M8.2 13.1l7.6 4.6"/></symbol>
+      <symbol id="i-trophy" viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M7 6H4a3 3 0 0 0 3 4M17 6h3a3 3 0 0 1-3 4"/></symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+      <symbol id="i-reset" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+      <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" class="dots"/></symbol>
+      <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6M16 6l6 6-6 6"/></symbol>
+      <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 2c1 4 5 5.5 5 10a5 5 0 0 1-10 0c0-2.5 1.5-4 2.5-5 .3 1.5 1 2.5 2 3 0-3 .5-5.5.5-8z"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 21V9M7 14l5-5 5 5M4 3h16"/></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+      <symbol id="i-cube" viewBox="0 0 24 24"><path d="m12 2 9 5v10l-9 5-9-5V7z"/><path d="m3 7 9 5 9-5M12 12v10"/></symbol>
+    </svg>
+
+    <canvas id="bevy" tabindex="-1" aria-label="Interactive 3D Rubik's Cube"></canvas>
+
+    <div class="ui" id="ui">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Rubik's Cube 3D">
+          <img src="/favicon.svg" alt="" width="28" height="28" />
+          <span class="brand-name">Cube</span>
+        </a>
+        <div class="size-picker" role="group" aria-label="Cube size" data-i18n-aria="size">
+          <button class="icon-btn sm" id="sizeDown" type="button" aria-label="Smaller cube" data-i18n-aria="smaller">−</button>
+          <button class="size-label" id="sizeBtn" type="button" aria-haspopup="dialog">3×3</button>
+          <button class="icon-btn sm" id="sizeUp" type="button" aria-label="Bigger cube" data-i18n-aria="bigger">+</button>
+        </div>
+
+        <div class="timer-wrap">
+          <div class="timer" id="timer" role="timer" aria-live="off">0.00</div>
+          <div class="timer-sub" id="timerSub"></div>
+        </div>
+
+        <nav class="top-actions" aria-label="Panels">
+          <button class="icon-btn has-dot" type="button" data-panel="daily" aria-label="Daily challenge" data-i18n-aria="daily"><svg class="ic"><use href="#i-calendar"/></svg><span class="dot" id="dailyDot" hidden></span></button>
+          <button class="icon-btn wide-only" type="button" data-panel="trainer" aria-label="Algorithm trainer" data-i18n-aria="trainer"><svg class="ic"><use href="#i-cap"/></svg></button>
+          <button class="icon-btn wide-only" type="button" data-panel="algs" aria-label="Algorithm lab" data-i18n-aria="algLab"><svg class="ic"><use href="#i-code"/></svg></button>
+          <button class="icon-btn wide-only" type="button" data-panel="stats" aria-label="Statistics" data-i18n-aria="stats"><svg class="ic"><use href="#i-chart"/></svg></button>
+          <button class="icon-btn wide-only" type="button" data-panel="awards" aria-label="Achievements" data-i18n-aria="awards"><svg class="ic"><use href="#i-trophy"/></svg></button>
+          <button class="icon-btn wide-only" type="button" data-panel="settings" aria-label="Settings" data-i18n-aria="settings"><svg class="ic"><use href="#i-gear"/></svg></button>
+          <button class="icon-btn wide-only" type="button" data-panel="help" aria-label="Help" data-i18n-aria="help"><svg class="ic"><use href="#i-help"/></svg></button>
+          <button class="icon-btn narrow-only" type="button" data-panel="menu" aria-label="Menu" data-i18n-aria="menu"><svg class="ic"><use href="#i-menu"/></svg></button>
+        </nav>
+      </header>
+
+      <div class="status" id="status" aria-live="polite">
+        <span class="mode-chip" id="modeChip" hidden></span>
+        <span class="status-text" id="statusText"></span>
       </div>
-      <div class="ldr-track"><div id="ldr-bar"></div></div>
-      <div id="ldr-label">Se încarcă…</div>
+
+      <div class="inspection" id="inspection" hidden aria-live="assertive">
+        <div class="insp-num" id="inspNum">15</div>
+        <div class="insp-label" data-i18n="inspection">Inspection</div>
+      </div>
+
+      <section class="player" id="player" hidden aria-label="Move player" data-i18n-aria="player">
+        <div class="player-head">
+          <span class="player-title" id="playerTitle"></span>
+          <span class="player-count" id="playerCount"></span>
+          <button class="icon-btn sm" type="button" id="playerClose" aria-label="Close" data-i18n-aria="close"><svg class="ic"><use href="#i-close"/></svg></button>
+        </div>
+        <div class="player-moves" id="playerMoves"></div>
+        <div class="player-controls">
+          <button class="icon-btn" type="button" data-player="start" aria-label="Back to start" data-i18n-aria="toStart"><svg class="ic"><use href="#i-first"/></svg></button>
+          <button class="icon-btn" type="button" data-player="prev" aria-label="Previous move" data-i18n-aria="prevMove"><svg class="ic"><use href="#i-prev"/></svg></button>
+          <button class="icon-btn lg accent" type="button" id="playerToggle" aria-label="Play" data-i18n-aria="play"><svg class="ic"><use href="#i-play"/></svg></button>
+          <button class="icon-btn" type="button" data-player="next" aria-label="Next move" data-i18n-aria="nextMove"><svg class="ic"><use href="#i-next"/></svg></button>
+          <button class="icon-btn" type="button" data-player="end" aria-label="Jump to end" data-i18n-aria="toEnd"><svg class="ic"><use href="#i-last"/></svg></button>
+        </div>
+      </section>
+
+      <div class="keypad" id="keypad" hidden role="group" aria-label="Move keypad" data-i18n-aria="keypad"></div>
+
+      <footer class="dock" aria-label="Cube controls" data-i18n-aria="controls">
+        <button class="dock-btn" type="button" id="undoBtn" disabled><svg class="ic"><use href="#i-undo"/></svg><span data-i18n="undo">Undo</span></button>
+        <button class="dock-btn" type="button" id="redoBtn" disabled><svg class="ic"><use href="#i-redo"/></svg><span data-i18n="redo">Redo</span></button>
+        <button class="dock-btn primary" type="button" id="scrambleBtn"><svg class="ic"><use href="#i-dice"/></svg><span data-i18n="scramble">Scramble</span></button>
+        <button class="dock-btn" type="button" id="solveBtn"><svg class="ic"><use href="#i-solve"/></svg><span data-i18n="solve">Solve</span></button>
+        <button class="dock-btn wide-only" type="button" id="hintBtn"><svg class="ic"><use href="#i-bulb"/></svg><span data-i18n="hint">Hint</span></button>
+        <button class="dock-btn wide-only" type="button" id="rewindBtn" disabled><svg class="ic"><use href="#i-rewind"/></svg><span data-i18n="rewind">Rewind</span></button>
+        <button class="dock-btn" type="button" id="keypadBtn" aria-pressed="false"><svg class="ic"><use href="#i-keypad"/></svg><span data-i18n="moves">Moves</span></button>
+        <button class="dock-btn narrow-only" type="button" id="moreBtn" aria-haspopup="menu" aria-expanded="false"><svg class="ic"><use href="#i-more"/></svg><span data-i18n="more">More</span></button>
+      </footer>
+
+      <div class="popover" id="moreMenu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="hint"><svg class="ic"><use href="#i-bulb"/></svg><span data-i18n="hint">Hint</span></button>
+        <button type="button" role="menuitem" data-action="rewind"><svg class="ic"><use href="#i-rewind"/></svg><span data-i18n="rewind">Rewind</span></button>
+        <button type="button" role="menuitem" data-action="reset"><svg class="ic"><use href="#i-reset"/></svg><span data-i18n="resetCube">Reset cube</span></button>
+        <button type="button" role="menuitem" data-action="view"><svg class="ic"><use href="#i-target"/></svg><span data-i18n="resetView">Reset view</span></button>
+        <button type="button" role="menuitem" data-action="fullscreen"><svg class="ic"><use href="#i-expand"/></svg><span data-i18n="fullscreen">Fullscreen</span></button>
+        <button type="button" role="menuitem" data-action="share"><svg class="ic"><use href="#i-share"/></svg><span data-i18n="shareState">Share this cube</span></button>
+      </div>
+
+      <!-- Panels: one dialog, content swapped per panel (built in ui/app.js). -->
+      <dialog class="sheet" id="sheet" aria-labelledby="sheetTitle">
+        <div class="sheet-grip" aria-hidden="true"></div>
+        <header class="sheet-head">
+          <h2 id="sheetTitle"></h2>
+          <button class="icon-btn" type="button" id="sheetClose" aria-label="Close" data-i18n-aria="close"><svg class="ic"><use href="#i-close"/></svg></button>
+        </header>
+        <div class="sheet-body" id="sheetBody"></div>
+      </dialog>
+
+      <dialog class="modal" id="solvedModal" aria-labelledby="solvedTitle">
+        <div class="solved">
+          <div class="solved-emoji" aria-hidden="true">🎉</div>
+          <h2 id="solvedTitle" data-i18n="solved">Solved!</h2>
+          <div class="solved-time" id="solvedTime">0.00</div>
+          <div class="solved-meta" id="solvedMeta"></div>
+          <div class="solved-badges" id="solvedBadges"></div>
+          <div class="solved-actions">
+            <button class="btn" type="button" id="solvedShare"><svg class="ic"><use href="#i-share"/></svg><span data-i18n="share">Share</span></button>
+            <button class="btn primary" type="button" id="solvedAgain"><svg class="ic"><use href="#i-dice"/></svg><span data-i18n="again">Again</span></button>
+          </div>
+          <button class="link-btn" type="button" id="solvedClose" data-i18n="close">Close</button>
+        </div>
+      </dialog>
+
+      <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
     </div>
 
-    <canvas id="bevy"></canvas>
+    <canvas id="confetti" aria-hidden="true"></canvas>
+
+    <div id="loader" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Loading">
+      <div class="ldr-cube" aria-hidden="true">
+        <i class="c-g"></i><i class="c-y"></i><i class="c-r"></i>
+        <i class="c-w"></i><i class="c-b"></i><i class="c-o"></i>
+        <i class="c-b"></i><i class="c-r"></i><i class="c-w"></i>
+      </div>
+      <div class="ldr-track"><div id="ldr-bar"></div></div>
+      <div id="ldr-label">Loading…</div>
+      <div id="ldr-actions" hidden>
+        <button class="btn" type="button" id="ldrReload">Reload</button>
+        <button class="btn" type="button" id="ldrClear">Clear cache</button>
+      </div>
+    </div>
+
+    <noscript>
+      <div class="noscript">
+        <h1>Rubik's Cube 3D</h1>
+        <p>This interactive cube needs JavaScript and WebGL2. Enable JavaScript to play, time your solves and train algorithms.</p>
+      </div>
+    </noscript>
+
     <link data-trunk rel="rust" data-wasm-opt="z" data-initializer="assets/initializer.mjs" />
-
-    <script>
-      // Fara WebGL2 nu avem ce porni — mai bine un mesaj decat un ecran mort.
-      if (!document.createElement('canvas').getContext('webgl2')) {
-        var label = document.getElementById('ldr-label');
-        if (label) label.textContent = 'Browserul tău nu suportă WebGL2, necesar pentru cub.';
-      }
-      if ('serviceWorker' in navigator) {
-        addEventListener('load', function () { navigator.serviceWorker.register('/sw.js'); });
-      }
-
-      // Bevy semnaleaza pornirea completa prin acest eveniment.
-      var __started = false;
-      addEventListener('TrunkApplicationStarted', function () { __started = true; });
-
-      // Recuperare: goleste cache-urile + service worker-ul si reincarca.
-      // Rezolva cazul in care browserul a retinut o versiune stricata.
-      function __hardReload() {
-        var done = function () { location.reload(); };
-        try {
-          var jobs = [];
-          if (window.caches && caches.keys) {
-            jobs.push(caches.keys().then(function (ks) {
-              return Promise.all(ks.map(function (k) { return caches.delete(k); }));
-            }));
-          }
-          if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-            jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
-              return Promise.all(rs.map(function (r) { return r.unregister(); }));
-            }));
-          }
-          Promise.all(jobs).then(done, done);
-        } catch (e) { done(); }
-      }
-
-      // Panic in WASM sau blocaj la incarcare → mesaj vizibil in loc de un
-      // ecran de incarcare inghetat in tacere.
-      (function () {
-        var shown = false;
-        function showError(msg) {
-          if (shown) return;
-          shown = true;
-          var loader = document.getElementById('loader');
-          if (loader) {
-            var lbl = document.getElementById('ldr-label');
-            if (lbl) lbl.textContent = msg;
-          }
-          var el = document.createElement('div');
-          el.style.cssText =
-            'position:fixed;top:0;left:0;right:0;z-index:99;padding:10px 14px;' +
-            'background:#b81205;color:#fff;font:14px -apple-system,sans-serif;text-align:center;';
-          el.textContent = msg + ' ';
-          var reload = document.createElement('button');
-          reload.textContent = 'Reîncarcă';
-          reload.style.cssText = 'margin:0 6px;padding:4px 14px;border:0;border-radius:6px;cursor:pointer;';
-          reload.onclick = function () { location.reload(); };
-          var reset = document.createElement('button');
-          reset.textContent = 'Golește cache';
-          reset.style.cssText = 'margin:0 6px;padding:4px 14px;border:0;border-radius:6px;cursor:pointer;';
-          reset.onclick = __hardReload;
-          el.appendChild(reload);
-          el.appendChild(reset);
-          document.body.appendChild(el);
-        }
-        addEventListener('error', function (e) {
-          if (e.error) showError('A apărut o eroare neașteptată.');
-        });
-        addEventListener('unhandledrejection', function () {
-          showError('Încărcarea a eșuat.');
-        });
-        // Watchdog: daca aplicatia nu a pornit in 30s, e blocata (retea lenta,
-        // modul necompatibil, memorie insuficienta pe mobil). Ofera recuperare.
-        setTimeout(function () {
-          if (!__started) showError('Se încarcă anevoios. Dacă rămâne blocat, încearcă:');
-        }, 30000);
-      })();
-    </script>
   </body>
 </html>
