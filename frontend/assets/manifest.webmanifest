@@ -1,15 +1,25 @@
 {
+  "id": "/",
   "name": "Rubik's Cube 3D",
   "short_name": "Cube",
-  "description": "Interactive 3D Rubik's Cube — Rust + Bevy + WebAssembly",
+  "description": "Play, time and learn the Rubik's Cube: 2×2 to 20×20, daily challenge, solver and OLL/PLL trainer. Works offline.",
+  "lang": "en",
   "start_url": "/",
+  "scope": "/",
   "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
   "orientation": "any",
-  "background_color": "#1a1a2e",
-  "theme_color": "#1a1a2e",
+  "background_color": "#0f1020",
+  "theme_color": "#0f1020",
+  "categories": ["games", "education", "entertainment"],
   "icons": [
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
     { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Daily challenge", "short_name": "Daily", "url": "/#daily", "icons": [{ "src": "/icon-180.png", "sizes": "180x180" }] },
+    { "name": "Algorithm trainer", "short_name": "Trainer", "url": "/#trainer", "icons": [{ "src": "/icon-180.png", "sizes": "180x180" }] },
+    { "name": "Statistics", "short_name": "Stats", "url": "/#stats", "icons": [{ "src": "/icon-180.png", "sizes": "180x180" }] }
   ]
 }

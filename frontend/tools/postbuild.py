@@ -10,7 +10,8 @@
 3. Fails the build if any inline script, inline event handler or style
    attribute is left in index.html.
 4. Injects the precache list and cache version into service-worker.js.
-5. Writes .gz siblings for nginx gzip_static (reproducible: mtime 0).
+5. Points 404.html at the same hashed stylesheet and writes sitemap.xml.
+6. Writes .gz siblings for nginx gzip_static (reproducible: mtime 0).
 
 Standard library only; run as: python3 tools/postbuild.py dist
 """
@@ -22,10 +23,12 @@ import json
 import re
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+SITE_URL = "https://cube.micutu.com/"
 COMPRESSIBLE = {".wasm", ".js", ".mjs", ".css", ".svg", ".html", ".webmanifest", ".json", ".txt", ".xml"}
-NO_PRECACHE = {"index.html", "service-worker.js", "robots.txt", "sitemap.xml", "404.html", "humans.txt"}
+NO_PRECACHE = {"index.html", "service-worker.js", "robots.txt", "sitemap.xml", "404.html", "humans.txt", "og.jpg"}
 
 
 def sri(data: bytes) -> str:
@@ -37,7 +40,24 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
-def hash_ui(dist: Path, html: str) -> str:
+def rewrite_ui_refs(html: str, tag: str, target: Path, page: str) -> str:
+    """Points /ui/ stylesheet and module links at the hashed dir, with SRI."""
+
+    def rewrite(match: re.Match) -> str:
+        prefix, rel = match.group(1), match.group(2)
+        path = target / rel
+        if not path.is_file():
+            fail(f"{page} references missing ui/{rel}")
+        return f'{prefix}"/{tag}/{rel}" integrity="{sri(path.read_bytes())}"'
+
+    html = re.sub(r'(<link rel="stylesheet" href=)"/ui/([^"]+)"', rewrite, html)
+    html = re.sub(r'(<script type="module" src=)"/ui/([^"]+)"', rewrite, html)
+    if "/ui/" in re.sub(r"<!--.*?-->", "", html, flags=re.S):
+        fail(f"unrewritten /ui/ reference left in {page}")
+    return html
+
+
+def hash_ui(dist: Path, html: str) -> tuple[str, str]:
     ui = dist / "ui"
     if not ui.is_dir():
         fail("dist/ui missing (is the copy-dir link in index.html?)")
@@ -53,25 +73,14 @@ def hash_ui(dist: Path, html: str) -> str:
         shutil.rmtree(target)
     ui.rename(target)
 
-    def rewrite(match: re.Match) -> str:
-        prefix, rel = match.group(1), match.group(2)
-        path = target / rel
-        if not path.is_file():
-            fail(f"index.html references missing ui/{rel}")
-        return f'{prefix}"/{tag}/{rel}" integrity="{sri(path.read_bytes())}"'
-
-    html = re.sub(r'(<link rel="stylesheet" href=)"/ui/([^"]+)"', rewrite, html)
-    html = re.sub(r'(<script type="module" src=)"/ui/([^"]+)"', rewrite, html)
-
+    html = rewrite_ui_refs(html, tag, target, "index.html")
     preloads = "".join(
         f'\n    <link rel="modulepreload" href="/{tag}/{f.name}" integrity="{sri(f.read_bytes())}" />'
         for f in sorted(target.glob("*.js"))
         if f.name != "app.js"
     )
     html = html.replace("</head>", f"{preloads}\n  </head>", 1)
-    if "/ui/" in re.sub(r"<!--.*?-->", "", html, flags=re.S):
-        fail("unrewritten /ui/ reference left in index.html")
-    return html
+    return html, tag
 
 
 def externalize_boot(dist: Path, html: str) -> str:
@@ -108,6 +117,17 @@ def check_csp_clean(html: str) -> None:
         fail("inline event handler attribute in index.html")
     if re.search(r"\sstyle\s*=", stripped):
         fail("style attribute in index.html (CSP style-src has no 'unsafe-inline')")
+
+
+def write_sitemap(dist: Path) -> None:
+    """One URL (the app routes with #fragments); lastmod = build day."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    (dist / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"  <url><loc>{SITE_URL}</loc><lastmod>{today}</lastmod></url>\n"
+        "</urlset>\n"
+    )
 
 
 def write_sw(dist: Path) -> None:
@@ -147,10 +167,19 @@ def main() -> None:
     html = index.read_text()
     for stale in dist.glob("*.gz"):
         stale.unlink()
-    html = hash_ui(dist, html)
+    html, tag = hash_ui(dist, html)
+    # Chrome ignores (and warns about) SRI on as="fetch" preloads; the WASM
+    # is fetched by the bootstrap, whose own integrity is pinned.
+    html = re.sub(r'(<link rel="preload"[^>]*?) integrity="[^"]*"([^>]*as="fetch")', r"\1\2", html)
     html = externalize_boot(dist, html)
     check_csp_clean(html)
     index.write_text(html)
+    not_found = dist / "404.html"
+    if not_found.is_file():
+        page = rewrite_ui_refs(not_found.read_text(), tag, dist / tag, "404.html")
+        check_csp_clean(page)
+        not_found.write_text(page)
+    write_sitemap(dist)
     write_sw(dist)
     precompress(dist)
     print("postbuild: ok")

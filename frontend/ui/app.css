@@ -496,8 +496,26 @@ textarea:focus, input[type="text"]:focus { border-color: rgba(255, 214, 10, 0.6)
 #ldr-bar { width: 0%; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #0045ad, #008c38, #ffd600, #ff5900, #b81205); transition: width 0.2s ease; }
 #ldr-actions { display: flex; gap: 10px; }
 
-.noscript { position: fixed; inset: 0; z-index: 40; background: var(--bg); padding: 40px 24px; text-align: center; }
+.noscript { position: fixed; inset: 0; z-index: 40; background: var(--bg); padding: 40px 24px; text-align: center; overflow: auto; }
 .noscript h1 { margin-bottom: 12px; }
+.noscript ul { display: inline-block; margin-top: 16px; text-align: left; color: var(--muted); padding-left: 20px; }
+
+/* ── 404 page (assets/404.html shares this stylesheet) ─────────────────── */
+
+.notfound {
+  position: fixed; inset: 0; overflow: auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  padding: calc(var(--sat) + 24px) 24px calc(var(--sab) + 24px); text-align: center;
+}
+.notfound h1 { font-size: clamp(22px, 5vw, 32px); }
+.notfound p { color: var(--muted); max-width: 440px; }
+.nf-cube { display: grid; grid-template-columns: repeat(3, 34px); gap: 5px; margin-bottom: 10px; transform: rotate(-8deg); }
+.nf-cube span { width: 34px; height: 34px; border-radius: 7px; box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.18); }
+.nf-btn {
+  margin-top: 10px; padding: 12px 22px; border-radius: 14px;
+  background: var(--accent); color: var(--accent-ink); font-weight: 700; text-decoration: none;
+}
+.nf-btn:hover { background: #ffe14d; }
 
 /* ── Wider screens ──────────────────────────────────────────────────────── */
 

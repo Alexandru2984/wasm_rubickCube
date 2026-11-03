@@ -1392,12 +1392,15 @@ function renderAll() {
 
 // ── URL fragments: shared links ─────────────────────────────────────────────
 
+const PANEL_LINKS = new Set(['daily', 'trainer', 'algs', 'stats', 'awards', 'settings', 'help']);
+
 function handleHash() {
   const raw = location.hash.slice(1);
   if (!raw) return;
   history.replaceState(null, '', location.pathname + location.search);
-  if (raw === 'daily') {
-    openPanel('daily');
+  // Panel deep links (#daily, #trainer, ...): used by the PWA shortcuts.
+  if (PANEL_LINKS.has(raw)) {
+    openPanel(raw);
     return;
   }
   let p;
@@ -1419,6 +1422,11 @@ function handleHash() {
     openPanel('algs');
   }
 }
+
+// Links clicked while the app is open (a shared #scramble=..., #daily).
+addEventListener('hashchange', () => {
+  if (started) handleHash();
+});
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 
