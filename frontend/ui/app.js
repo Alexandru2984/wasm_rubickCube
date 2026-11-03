@@ -653,6 +653,7 @@ function renderControls() {
 
 function modeLabel() {
   if (S.mode.startsWith('daily:')) return t('modeDaily', { n: St.dailyNumber(Number(S.mode.slice(6))) });
+  if (S.mode.startsWith('replay:')) return t('modeReplay', { n: St.dailyNumber(Number(S.mode.slice(7))) });
   if (S.mode.startsWith('trainer:')) {
     const c = catalog[Number(S.mode.slice(8))];
     return c ? c.name : '';
@@ -778,7 +779,11 @@ function renderPlayerMoves() {
   // Very long sequences (big-cube rewinds) show a window around the cursor.
   box.replaceChildren(...playerInfo.moves.slice(0, 400).map((m, i) => h('span', { class: 'mv', text: m, data: { i: String(i) } })));
   $('#playerTitle').textContent =
-    playerInfo.title === 'solver' ? t('solve') : playerInfo.title === 'rewind' ? t('rewind') : playerInfo.title === 'alg' ? t('algLab') : playerInfo.title;
+    playerInfo.title === 'solver' ? t('solve')
+      : playerInfo.title === 'rewind' ? t('rewind')
+        : playerInfo.title === 'alg' ? t('algLab')
+          : playerInfo.title === 'replay' && replayInfo ? `#${replayInfo.rank} ${replayInfo.name} · ${St.fmt(replayInfo.ms)}`
+            : playerInfo.title;
   box.hidden = n === 0;
 }
 
@@ -999,6 +1004,7 @@ function buildDaily() {
 const lbBoards = new Map(); // day → { at, board } (board null = unavailable)
 const lbLoading = new Map(); // day → in-flight fetch
 let lbTab = 0; // 0 = today, 1 = yesterday
+let replayInfo = null; // the recorded solve being watched
 let lbBusy = false; // a submission is in flight
 let lbNote = null; // { day, msg }: outcome of the last attempt, for the UI
 let lbEditing = false;
@@ -1160,14 +1166,39 @@ function lbBoardView(board, day) {
   }
   if (!board.top.length) return [h('p', { class: 'lb-empty muted small', text: t(day === board.today ? 'lbEmpty' : 'lbEmptyPast') })];
   const meRank = board.me ? board.me.rank : 0;
+  const watchable = board.top.some((r) => r.replay);
   const row = (r) => h('li', { class: `lb-row${r.rank === meRank ? ' me' : ''}${r.rank <= 3 ? ` r${r.rank}` : ''}` },
     h('span', { class: 'lb-rank', text: String(r.rank) }),
     h('span', { class: 'lb-name', text: r.name, title: r.name }),
     h('span', { class: 'lb-moves', text: t('lbMv', { n: r.moves }) }),
-    h('span', { class: 'lb-time', text: St.fmt(r.ms) }));
-  const list = h('ol', { class: 'lb-list', 'aria-label': t('lbTitle') }, ...board.top.map(row));
-  if (board.me && board.me.rank > board.top.length) list.append(h('li', { class: 'lb-gap', 'aria-hidden': 'true', text: '⋯' }), row(board.me));
-  return [list, h('p', { class: 'muted small lb-total', text: t('lbPlayers', { n: board.total }) })];
+    h('span', { class: 'lb-time', text: St.fmt(r.ms) }),
+    !watchable ? null
+      : r.replay ? h('button', { class: 'icon-btn sm lb-play', type: 'button', 'aria-label': t('lbWatch', { rank: r.rank, name: r.name }), on: { click: (e) => watchSolve(day, r.rank, e.currentTarget) } }, icon('play'))
+        : h('span'));
+  const list = h('ol', { class: `lb-list${watchable ? ' watch' : ''}`, 'aria-label': t('lbTitle') }, ...board.top.map(row));
+  if (board.me && board.me.rank > board.top.length) list.append(h('li', { class: 'lb-gap', 'aria-hidden': 'true', text: '⋯' }), row({ ...board.me, replay: false }));
+  return [
+    watchable ? h('p', { class: 'muted small lb-note', text: t('lbWatchHint') }) : null,
+    list,
+    h('p', { class: 'muted small lb-total', text: t('lbPlayers', { n: board.total }) }),
+    !board.final && day === board.today ? h('p', { class: 'muted small lb-note', text: t('lbWatchLater') }) : null,
+  ].filter(Boolean);
+}
+
+/** Loads one of a final day's best solves and plays it on the cube. */
+async function watchSolve(day, rank, button) {
+  button.disabled = true;
+  const solve = await Lb.fetchSolve(day, rank);
+  button.disabled = false;
+  if (!solve) {
+    toast(t('lbWatchFail'));
+    return;
+  }
+  sound.unlock();
+  replayInfo = solve;
+  engine.send('replay', `${solve.day} ${solve.sol}`);
+  track('replay', { rank });
+  if (!wideMq.matches) closePanel();
 }
 
 // Trainer --------------------------------------------------------------------

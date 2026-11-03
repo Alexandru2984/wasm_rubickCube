@@ -32,6 +32,14 @@ pub fn parse(text: String) -> Result(Parsed, Nil) {
   Ok(Parsed(list.map(parsed, fn(p) { p.0 }), moves))
 }
 
+/// The tokens of a solution joined by single spaces (as stored for replay).
+pub fn canonical(text: String) -> String {
+  text
+  |> string.split(" ")
+  |> list.filter(fn(t) { t != "" })
+  |> string.join(" ")
+}
+
 fn guard(fails: Bool, next: fn() -> Result(a, Nil)) -> Result(a, Nil) {
   case fails {
     True -> Error(Nil)

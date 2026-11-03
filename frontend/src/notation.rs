@@ -60,6 +60,7 @@ struct Parser<'a> {
     s: &'a [u8],
     i: usize,
     n: i32,
+    max_moves: usize,
 }
 
 impl Parser<'_> {
@@ -99,7 +100,7 @@ impl Parser<'_> {
                     // Closing paren consumed by the inner call; optional repeat count.
                     let times = self.number().unwrap_or(1).clamp(0, MAX_REPEAT as i32) as usize;
                     for _ in 0..times {
-                        if out.len() + inner.len() > MAX_MOVES {
+                        if out.len() + inner.len() > self.max_moves {
                             return Err(ParseError::TooManyMoves);
                         }
                         out.extend_from_slice(&inner);
@@ -114,7 +115,7 @@ impl Parser<'_> {
                 }
                 _ => {
                     let mv = self.one_move()?;
-                    if out.len() >= MAX_MOVES {
+                    if out.len() >= self.max_moves {
                         return Err(ParseError::TooManyMoves);
                     }
                     out.push(mv);
@@ -219,7 +220,12 @@ impl Parser<'_> {
 
 /// Parses an algorithm for an n x n cube.
 pub fn parse_alg(input: &str, n: i32) -> Result<Vec<CubeMove>, ParseError> {
-    if input.len() > MAX_INPUT_LEN {
+    parse_alg_limited(input, n, MAX_INPUT_LEN, MAX_MOVES)
+}
+
+/// [`parse_alg`] with other bounds, for whole recorded solves.
+pub fn parse_alg_limited(input: &str, n: i32, max_len: usize, max_moves: usize) -> Result<Vec<CubeMove>, ParseError> {
+    if input.len() > max_len {
         return Err(ParseError::TooLong);
     }
     // Typographic primes from phones and copy-pasted docs.
@@ -234,7 +240,7 @@ pub fn parse_alg(input: &str, n: i32) -> Result<Vec<CubeMove>, ParseError> {
         let pos = normalized.char_indices().find(|(_, c)| !c.is_ascii()).map(|(i, _)| i).unwrap_or(0);
         return Err(ParseError::Unexpected(pos));
     }
-    let mut p = Parser { s: normalized.as_bytes(), i: 0, n };
+    let mut p = Parser { s: normalized.as_bytes(), i: 0, n, max_moves };
     let mut out = Vec::new();
     p.sequence(0, &mut out)?;
     Ok(out)

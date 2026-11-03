@@ -463,6 +463,13 @@ textarea:focus, input[type="text"]:focus { border-color: rgba(255, 214, 10, 0.6)
 .lb-row.me { border-color: rgba(255, 214, 10, 0.55); background: rgba(255, 214, 10, 0.09); }
 .lb-row.me .lb-name::after { content: " ●"; color: var(--accent); font-size: 10px; vertical-align: 2px; }
 .lb-gap { text-align: center; color: var(--faint); line-height: 1; padding: 1px 0; }
+.lb-list.watch .lb-row { grid-template-columns: 2em minmax(0, 1fr) auto 4.9em 30px; padding-right: 6px; }
+.lb-play { width: 30px; height: 30px; margin: -4px 0; color: var(--accent); background: rgba(255, 214, 10, 0.1); }
+.lb-play .ic { width: 14px; height: 14px; }
+.lb-play:hover { background: rgba(255, 214, 10, 0.2); }
+.lb-play:disabled { opacity: 0.5; }
+.lb-note { text-align: center; margin: 0 0 8px; }
+.lb-total + .lb-note { margin: 4px 0 0; }
 .lb-total { margin-top: 9px; text-align: center; }
 .lb-empty { text-align: center; padding: 14px 8px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .lb-skel { display: flex; flex-direction: column; gap: 4px; }
@@ -479,6 +486,8 @@ textarea:focus, input[type="text"]:focus { border-color: rgba(255, 214, 10, 0.6)
 .solved-lb .link-btn { padding: 4px; font-size: 13px; }
 @media (max-width: 380px) {
   .lb-row { gap: 7px; padding: 8px 10px; grid-template-columns: 1.6em minmax(0, 1fr) auto 4.6em; }
+  .lb-list.watch .lb-row { grid-template-columns: 1.6em minmax(0, 1fr) auto 4.6em 28px; padding-right: 5px; }
+  .lb-play { width: 28px; height: 28px; }
   .lb-moves { font-size: 11px; }
 }
 

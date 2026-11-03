@@ -3,6 +3,8 @@
 //// - `GET  /api/health`
 //// - `GET  /api/daily/<day>[?me=<id>]` → top 50, total, and your entry
 //// - `POST /api/daily/<day>` `{name, token, ms, sol}` → your id and rank
+//// - `GET  /api/daily/<day>/solve/<rank>` → a top-10 solution, once the
+////   day is final
 ////
 //// A submission is only ranked after the server regenerates that day's
 //// scramble, replays the reported solution on it and finds the cube
@@ -35,6 +37,11 @@ pub const top = 50
 
 /// GET serves this many past days (and tomorrow, for clocks running ahead).
 pub const history_days = 60
+
+/// Yesterday's challenge still takes submissions this long into today (a
+/// solve that crossed midnight, a short outage); then the day is final and
+/// its best solutions can be watched.
+pub const grace_ms = 3_600_000
 
 pub type Context {
   Context(
@@ -121,6 +128,13 @@ pub fn handle(ctx: Context, req: Request) -> #(Int, String) {
         Ok(day), "POST" -> post_solve(ctx, req, day)
         Ok(_), _ -> error(405, "method")
       }
+    ["", "api", "daily", day, "solve", rank], method ->
+      case parse_day(day), int.parse(rank), method {
+        Ok(day), Ok(rank), "GET" | Ok(day), Ok(rank), "HEAD" ->
+          get_solution(ctx, day, rank)
+        Ok(_), Ok(_), _ -> error(405, "method")
+        _, _, _ -> error(404, "not_found")
+      }
     _, _ -> error(404, "not_found")
   }
 }
@@ -143,16 +157,51 @@ fn get_board(ctx: Context, req: Request, day: Int) -> #(Int, String) {
         |> option.from_result
       let board =
         process.call(ctx.store, 5000, fn(r) { store.GetBoard(day, me, top, r) })
+      let final = is_final(day, ctx.now)
       reply(
         200,
         json.object([
           #("day", json.int(board.day)),
           #("today", json.int(today)),
+          #("final", json.bool(final)),
           #("total", json.int(board.total)),
-          #("top", json.array(board.top, ranked)),
+          #("top", json.array(board.top, ranked_row(_, final))),
           #("me", json.nullable(board.me, ranked)),
         ]),
       )
+    }
+  }
+}
+
+/// No more submissions: past days, and yesterday once the grace is over.
+pub fn is_final(day: Int, now: Int) -> Bool {
+  let today = now / day_ms
+  day < today - 1 || { day == today - 1 && now - today * day_ms >= grace_ms }
+}
+
+fn get_solution(ctx: Context, day: Int, rank: Int) -> #(Int, String) {
+  let today = ctx.now / day_ms
+  case day < today - history_days || day > today + 1 {
+    True -> error(404, "not_found")
+    False -> {
+      use <- check(is_final(day, ctx.now), 404, "not_final")
+      let found =
+        process.call(ctx.store, 5000, fn(r) { store.GetSolution(day, rank, r) })
+      case found {
+        Error(_) -> error(404, "no_solution")
+        Ok(e) ->
+          reply(
+            200,
+            json.object([
+              #("day", json.int(day)),
+              #("rank", json.int(rank)),
+              #("name", json.string(e.name)),
+              #("ms", json.int(e.ms)),
+              #("moves", json.int(e.moves)),
+              #("sol", json.string(e.sol)),
+            ]),
+          )
+      }
     }
   }
 }
@@ -178,7 +227,11 @@ fn post_solve(ctx: Context, req: Request, day: Int) -> #(Int, String) {
   use <- check(json_body, 415, "content_type")
   use <- check(req.origin == ctx.origin, 403, "origin")
   // Today's challenge, or yesterday's for a solve that crossed midnight.
-  use <- check(day == today || day == today - 1, 422, "day_closed")
+  use <- check(
+    day == today || { day == today - 1 && !is_final(day, ctx.now) },
+    422,
+    "day_closed",
+  )
   let submission =
     bit_array.to_string(req.body)
     |> result.try(fn(text) {
@@ -206,6 +259,7 @@ fn post_solve(ctx: Context, req: Request, day: Int) -> #(Int, String) {
                   moves: parsed.moves,
                   at: ctx.now,
                   token: ffi.sha256_hex(sub.token),
+                  sol: notation.canonical(sub.sol),
                 )
               save(ctx, entry, req.ip, today)
             }
@@ -253,6 +307,18 @@ fn save(ctx: Context, entry: Entry, ip: String, today: Int) -> #(Int, String) {
       error(503, "storage")
     }
   }
+}
+
+/// A board row; `replay` says its solution can be fetched.
+fn ranked_row(pair: #(Int, Entry), final: Bool) -> Json {
+  let #(rank, e) = pair
+  json.object([
+    #("rank", json.int(rank)),
+    #("name", json.string(e.name)),
+    #("ms", json.int(e.ms)),
+    #("moves", json.int(e.moves)),
+    #("replay", json.bool(final && e.sol != "")),
+  ])
 }
 
 fn ranked(pair: #(Int, Entry)) -> Json {

@@ -8,7 +8,7 @@ use crate::cube::{
     BACKGROUND_COUNT, LAYER_ALL, SCHEMES,
 };
 use crate::input::{OrbitCamera, PointerState};
-use crate::notation::{format_alg, format_move, parse_alg};
+use crate::notation::{format_alg, format_move, parse_alg, parse_alg_limited};
 use crate::persist;
 use crate::scramble;
 use crate::solver::{self, SolverContext};
@@ -87,6 +87,8 @@ pub enum Mode {
     Scramble,
     Daily(u32),
     Trainer(usize),
+    /// Watching a recorded solve of that day's challenge.
+    Replay(u32),
 }
 
 impl Mode {
@@ -96,6 +98,7 @@ impl Mode {
             Mode::Scramble => "scramble".into(),
             Mode::Daily(d) => format!("daily:{d}"),
             Mode::Trainer(i) => format!("trainer:{i}"),
+            Mode::Replay(d) => format!("replay:{d}"),
         }
     }
 }
@@ -156,6 +159,7 @@ pub enum SceneOp {
     ScrambleInstant { moves: Vec<CubeMove> },
     Setup { moves: Vec<CubeMove>, ready: bool },
     Trainer { case: usize, auf: bool },
+    Replay { day: u32, scramble: Vec<CubeMove>, solution: Vec<CubeMove> },
 }
 
 #[derive(Resource, Default)]
@@ -513,6 +517,24 @@ pub fn handle_commands(mut s: Session, mut settings: ResMut<Settings>, mut cam: 
                     s.pending.0 = Some(SceneOp::ScrambleInstant { moves });
                 }
             }
+            UiCommand::Replay { day, solution } => {
+                // Recorded solves are 3x3, logged by this engine (at most
+                // MAX_SOLUTION_LOG turns) and checked by the server.
+                match parse_alg_limited(&solution, 3, bridge::MAX_REPLAY_LEN, MAX_SOLUTION_LOG) {
+                    Ok(solution) if !solution.is_empty() => {
+                        if s.size.0 != 3 {
+                            s.size.0 = 3;
+                        }
+                        let scramble = scramble::generate(bridge::daily_seed(day), 3);
+                        s.close_player();
+                        s.queue.0.clear();
+                        s.solver.pending = false;
+                        s.pending.0 = Some(SceneOp::Replay { day, scramble, solution });
+                    }
+                    Ok(_) => s.error("replay", "empty"),
+                    Err(e) => s.error("replay", &e.code()),
+                }
+            }
             UiCommand::Solve { autoplay } => {
                 if s.size.0 == 3 {
                     s.close_player();
@@ -722,7 +744,7 @@ pub fn apply_pending(mut s: Session, mut cubies: Query<(&mut GridPos, &mut Trans
     if s.pending.0.is_none() || !s.settled() || cubies.iter().count() != surface_count(s.size.0) {
         return;
     }
-    if matches!(s.pending.0, Some(SceneOp::Trainer { .. })) && s.size.0 != 3 {
+    if matches!(s.pending.0, Some(SceneOp::Trainer { .. } | SceneOp::Replay { .. })) && s.size.0 != 3 {
         return;
     }
     let Some(op) = s.pending.0.take() else { return };
@@ -790,6 +812,15 @@ pub fn apply_pending(mut s: Session, mut cubies: Query<(&mut GridPos, &mut Trans
             s.game.mode = Mode::Trainer(case);
             s.game.scramble = format_alg(&setup, 3);
             ready = !pattern;
+        }
+        SceneOp::Replay { day, scramble, solution } => {
+            for mv in &scramble {
+                apply_move_instant(&mut cubies, mv);
+                s.push_history(*mv);
+            }
+            s.game.scramble = format_alg(&scramble, 3);
+            s.start_player(solution, PlayerKind::Apply, "replay", true);
+            s.game.mode = Mode::Replay(day);
         }
     }
     if ready {

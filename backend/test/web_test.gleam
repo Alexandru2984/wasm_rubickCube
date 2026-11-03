@@ -13,10 +13,18 @@ const day = 20_395
 const solution = "R F2 D' R' B' R' U' B' R B' L2 D2 F2 U R2 U' F2 L2 U' B2 L2 U"
 
 fn ctx_at(now_day: Int) -> web.Context {
-  let assert Ok(started) = store.start(store.new(fn(_) { Ok(Nil) }))
   // Noon UTC, so "yesterday" and "tomorrow" are unambiguous.
-  let now = now_day * web.day_ms + web.day_ms / 2
+  ctx_at_ms(now_day * web.day_ms + web.day_ms / 2)
+}
+
+fn ctx_at_ms(now: Int) -> web.Context {
+  let assert Ok(started) = store.start(store.new(fn(_) { Ok(Nil) }))
   Context(started.data, origin, now, counter())
+}
+
+/// The same store, seen at another time.
+fn later(ctx: web.Context, now: Int) -> web.Context {
+  Context(..ctx, now: now)
 }
 
 fn counter() -> fn() -> String {
@@ -139,10 +147,20 @@ pub fn an_unsolved_result_is_refused_test() {
 }
 
 pub fn only_today_and_yesterday_are_open_test() {
-  let ctx = ctx_at(day + 1)
+  // Yesterday's challenge takes a solve that crossed midnight...
+  let midnight = { day + 1 } * web.day_ms
+  let ctx = ctx_at_ms(midnight + web.grace_ms - 1)
   let #(status, _) =
     post(ctx, "/api/daily/20395", body("Late", token(4), 25_000, solution))
   assert status == 201
+  // ...until the grace is over.
+  let ctx = ctx_at_ms(midnight + web.grace_ms)
+  assert error_code(post(
+      ctx,
+      "/api/daily/20395",
+      body("Later", token(5), 25_000, solution),
+    ))
+    == "day_closed"
   let ctx = ctx_at(day + 2)
   assert error_code(post(
       ctx,
@@ -294,4 +312,61 @@ pub fn routing_test() {
       Request("DELETE", "/api/daily/20395", "", "", "", "1.2.3.4", <<>>),
     )
   assert delete.0 == 405
+}
+
+pub fn best_solves_can_be_watched_once_the_day_is_final_test() {
+  let ctx = ctx_at(day)
+  let padded = "  " <> string.replace(solution, " ", "   ") <> " "
+  let assert #(201, _) =
+    post(ctx, "/api/daily/20395", body("Ana", token(20), 25_000, padded))
+  // Still open: no peeking at today's best.
+  let #(status, text) = get(ctx, "/api/daily/20395/solve/1", "")
+  assert status == 404
+  assert field(text, "error", decode.string) == "not_final"
+  let #(_, text) = get(ctx, "/api/daily/20395", "")
+  assert !field(text, "final", decode.bool)
+  assert !first_replay(text)
+  // During tomorrow's grace hour it is still open.
+  let midnight = { day + 1 } * web.day_ms
+  let #(status, _) =
+    get(later(ctx, midnight + 60_000), "/api/daily/20395/solve/1", "")
+  assert status == 404
+
+  let ctx = later(ctx, midnight + web.grace_ms)
+  let #(_, text) = get(ctx, "/api/daily/20395", "")
+  assert field(text, "final", decode.bool)
+  assert first_replay(text)
+  let #(status, text) = get(ctx, "/api/daily/20395/solve/1", "")
+  assert status == 200
+  assert field(text, "name", decode.string) == "Ana"
+  assert field(text, "ms", decode.int) == 25_000
+  assert field(text, "moves", decode.int) == 22
+  // Stored in canonical form.
+  assert field(text, "sol", decode.string) == solution
+
+  assert error_code(get(ctx, "/api/daily/20395/solve/2", "")) == "no_solution"
+  assert error_code(get(ctx, "/api/daily/20395/solve/11", "")) == "no_solution"
+  assert error_code(get(ctx, "/api/daily/20395/solve/0", "")) == "no_solution"
+  assert get(ctx, "/api/daily/20395/solve/x", "").0 == 404
+  assert get(ctx, "/api/daily/20000/solve/1", "").0 == 404
+  let post_it =
+    web.handle(
+      ctx,
+      Request(
+        "POST",
+        "/api/daily/20395/solve/1",
+        "",
+        "application/json",
+        origin,
+        "1.2.3.4",
+        <<>>,
+      ),
+    )
+  assert post_it.0 == 405
+}
+
+fn first_replay(text: String) -> Bool {
+  let rows = decode.at(["top"], decode.list(decode.at(["replay"], decode.bool)))
+  let assert Ok([flag, ..]) = json.parse(text, rows)
+  flag
 }

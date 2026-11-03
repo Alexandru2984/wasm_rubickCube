@@ -13,6 +13,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 const MAX_ARG_LEN: usize = 2048;
+/// A recorded solve is longer than anything typed: `<day> <solution>`.
+pub const MAX_REPLAY_LEN: usize = 16_384;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 const MAX_INBOX: usize = 128;
 
@@ -37,6 +39,11 @@ pub enum UiCommand {
         daily: Option<u32>,
     },
     ScrambleAlg(String),
+    /// Play a recorded daily solve: the day's scramble, then `solution`.
+    Replay {
+        day: u32,
+        solution: String,
+    },
     Solve {
         autoplay: bool,
     },
@@ -65,7 +72,7 @@ pub enum UiCommand {
 
 impl UiCommand {
     pub fn parse(name: &str, arg: &str) -> Option<Self> {
-        if arg.len() > MAX_ARG_LEN {
+        if arg.len() > if name == "replay" { MAX_REPLAY_LEN } else { MAX_ARG_LEN } {
             return None;
         }
         let arg = arg.trim();
@@ -85,6 +92,10 @@ impl UiCommand {
                 }
             }
             "scramble_alg" => Self::ScrambleAlg(arg.to_owned()),
+            "replay" => {
+                let (day, solution) = arg.split_once(' ')?;
+                Self::Replay { day: day.parse().ok()?, solution: solution.trim().to_owned() }
+            }
             "solve" => Self::Solve { autoplay: arg != "hint" },
             "rewind" => Self::Rewind,
             "undo" => Self::Undo,
@@ -292,6 +303,20 @@ mod tests {
         assert_eq!(UiCommand::parse("player", "explode"), None);
         assert_eq!(UiCommand::parse("__proto__", ""), None);
         assert_eq!(UiCommand::parse("move", &"R".repeat(5000)), None);
+    }
+
+    #[test]
+    fn replay_takes_a_day_and_a_long_solution() {
+        let long = "R U ".repeat(1500);
+        assert_eq!(
+            UiCommand::parse("replay", &format!("20395 {long}")),
+            Some(UiCommand::Replay { day: 20395, solution: long.trim().to_owned() })
+        );
+        assert_eq!(UiCommand::parse("replay", "20395"), None);
+        assert_eq!(UiCommand::parse("replay", "-1 R U"), None);
+        assert_eq!(UiCommand::parse("replay", &format!("1 {}", "R ".repeat(MAX_REPLAY_LEN))), None);
+        // Only replay gets the long limit.
+        assert_eq!(UiCommand::parse("play_alg", &long), None);
     }
 
     #[test]

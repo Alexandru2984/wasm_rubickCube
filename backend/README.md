@@ -23,11 +23,14 @@ and no faster than 15 turns per second.
 | | |
 |---|---|
 | `GET /api/health` | `{"ok":true}` |
-| `GET /api/daily/<day>[?me=<id>]` | `{day, today, total, top: [{rank,name,ms,moves}] (50), me}` |
+| `GET /api/daily/<day>[?me=<id>]` | `{day, today, final, total, top: [{rank,name,ms,moves,replay}] (50), me}` |
 | `POST /api/daily/<day>` | body `{name, token, ms, sol}` → `201 {id, rank, total, name, ms, moves, fresh}` |
+| `GET /api/daily/<day>/solve/<rank>` | `{day, rank, name, ms, moves, sol}` for ranks 1–10 of a final day |
 
-`<day>` is the UTC day number (`Date.now() / 86400000`, floored). Only today and yesterday accept
-submissions, so a solve that crosses midnight still counts. GET serves the last 60 days.
+`<day>` is the UTC day number (`Date.now() / 86400000`, floored). Today's challenge accepts
+submissions, and so does yesterday's for the first hour after midnight UTC, so a solve that
+crosses midnight still counts. After that the day is `final`, and its best solves can be fetched
+and watched (`replay: true` on those rows). GET serves the last 60 days.
 
 **Errors** come back as `{"error": code}`:
 
@@ -35,7 +38,7 @@ submissions, so a solve that crosses midnight still counts. GET serves the last 
 |---|---|
 | 400 | `bad_request` |
 | 403 | `origin` |
-| 404 | |
+| 404 | `not_found`; for a solve: `not_final`, `no_solution` |
 | 405 | |
 | 413 | body over 16 KB |
 | 415 | `content_type` |
@@ -64,13 +67,17 @@ reply. Moderation appends a tombstone (`{"del":"<id>"}`), as `deploy/backend/cub
 does, and the next restart drops the entry. The file is replayed at startup, keeping the last 60
 days in memory.
 
+Solutions are kept only for replay of the top 10. A line carries its `sol` only if the entry
+ranked in the day's top 10 when it arrived, with at most 200 such lines a day. In memory, an
+entry drops its solution once it is pushed out of the top 10.
+
 A daily timer backs the file up: a local snapshot, plus an encrypted copy on Google Drive that is
 read back and verified (`deploy/backend/cube-lb-backup`).
 
 ## Development
 
 ```sh
-gleam test                                 # 33 tests: vectors, replay, validation, store, HTTP
+gleam test                                 # 36 tests: vectors, replay, validation, store, HTTP
 CUBE_LB_PORT=18737 CUBE_LB_DATA=/tmp/lb gleam run
 curl -s localhost:18737/api/daily/$(( $(date +%s) / 86400 ))
 ```

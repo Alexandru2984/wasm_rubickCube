@@ -5,7 +5,11 @@ import gleam/option.{None, Some}
 import gleam/string
 
 fn entry(id: String, day: Int, ms: Int, moves: Int, at: Int) -> store.Entry {
-  Entry(id, day, "N" <> id, ms, moves, at, "tok" <> id)
+  Entry(id, day, "N" <> id, ms, moves, at, "tok" <> id, "")
+}
+
+fn solved(id: String, day: Int, ms: Int, at: Int) -> store.Entry {
+  Entry(..entry(id, day, ms, 40, at), sol: "sol-" <> id)
 }
 
 fn fresh() -> store.State {
@@ -86,9 +90,97 @@ pub fn load_replays_entries_and_tombstones_test() {
 }
 
 pub fn records_round_trip_test() {
-  let e = Entry("id", 20_760, "Ștefan \"q\"", 12_345, 61, 99, "t")
+  let e = Entry("id", 20_760, "Ștefan \"q\"", 12_345, 61, 99, "t", "")
   let assert #(st, 1, 0) = store.load(fresh(), store.encode(e), 20_760)
   assert store.board(st, 20_760, None, 50).top == [#(1, e)]
+  // A solution only appears in the line when there is one.
+  assert !string.contains(store.encode(e), "sol")
+  let s = Entry(..e, sol: "R U R'")
+  let assert #(st, 1, 0) = store.load(fresh(), store.encode(s), 20_760)
+  assert store.solution(st, 20_760, 1) == Ok(s)
+}
+
+/// Collects what the store writes, through the process dictionary.
+fn recording() -> store.State {
+  store.new(fn(line) {
+    put("lines", [line, ..get("lines")])
+    Ok(Nil)
+  })
+}
+
+@external(erlang, "erlang", "put")
+fn put_raw(key: String, value: List(String)) -> List(String)
+
+@external(erlang, "erlang", "get")
+fn get_raw(key: String) -> a
+
+fn put(key: String, value: List(String)) -> Nil {
+  put_raw(key, value)
+  Nil
+}
+
+fn get(key: String) -> List(String) {
+  let value = get_raw(key)
+  case is_list(value) {
+    True -> value
+    False -> []
+  }
+}
+
+@external(erlang, "erlang", "is_list")
+fn is_list(value: a) -> Bool
+
+pub fn solutions_are_kept_for_the_top_ten_only_test() {
+  put("lines", [])
+  // Twelve entries, each slower than the last: the first ten keep theirs.
+  let st =
+    int.range(1, 13, recording(), fn(st, i) {
+      let id = string.inspect(i)
+      store.submit(st, solved(id, 10, 10_000 + i, i), id, 10).0
+    })
+  let written = get("lines")
+  assert list.count(written, string.contains(_, "\"sol\"")) == 10
+  assert store.solution(st, 10, 1) |> result_id == Ok("1")
+  assert store.solution(st, 10, 10) |> result_id == Ok("10")
+  assert store.solution(st, 10, 11) == Error(Nil)
+  assert store.solution(st, 10, 0) == Error(Nil)
+  // A new #1 pushes #10 out, and #10 loses its solution in memory.
+  let #(st, _) = store.submit(st, solved("fast", 10, 5000, 50), "f", 10)
+  assert store.solution(st, 10, 1) |> result_id == Ok("fast")
+  assert store.solution(st, 10, 10) |> result_id == Ok("9")
+  assert store.solution(st, 10, 11) == Error(Nil)
+  // Reloading the file gives the same picture.
+  let #(again, _, _) =
+    store.load(fresh(), string.join(list.reverse(get("lines")), "\n"), 10)
+  assert store.solution(again, 10, 1) |> result_id == Ok("fast")
+  assert store.solution(again, 10, 10) |> result_id == Ok("9")
+  assert store.solution(again, 10, 11) == Error(Nil)
+  assert store.board(again, 10, None, 50).total == 13
+}
+
+pub fn solution_lines_per_day_are_capped_test() {
+  put("lines", [])
+  // Ever-faster entries all reach #1; only the first few hundred keep a solution.
+  let total = store.max_solutions_per_day + 5
+  let st =
+    int.range(0, total, recording(), fn(st, i) {
+      let id = string.inspect(i)
+      store.submit(st, solved(id, 10, 600_000 - i, i), id, 10).0
+    })
+  assert list.count(get("lines"), string.contains(_, "\"sol\""))
+    == store.max_solutions_per_day
+  // The newest #1 came after the cap: no solution to show.
+  assert store.solution(st, 10, 1) == Error(Nil)
+  // Another day is unaffected.
+  let #(st, _) = store.submit(st, solved("next", 11, 9000, 1), "n", 11)
+  assert store.solution(st, 11, 1) |> result_id == Ok("next")
+}
+
+fn result_id(r: Result(store.Entry, Nil)) -> Result(String, Nil) {
+  case r {
+    Ok(e) -> Ok(e.id)
+    Error(e) -> Error(e)
+  }
 }
 
 pub fn board_limits_top_but_finds_me_anywhere_test() {

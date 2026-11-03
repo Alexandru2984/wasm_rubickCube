@@ -4,6 +4,11 @@
 //// Each line is an entry or a tombstone (`{"del":"<id>"}`, written by the
 //// moderation script). No IP address is ever written: the per-address cap
 //// lives in memory only and is forgotten on restart.
+////
+//// Solutions are kept only for a day's best few entries, so they can be
+//// replayed once the day is over: an entry carries its solution in the file
+//// only if it ranked in the top `replay_top` when it arrived, and in memory
+//// only while it is still there.
 
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -27,9 +32,17 @@ pub const max_per_day = 20_000
 /// Accepted submissions per address (or IPv6 /64) per day.
 pub const max_per_ip = 5
 
+/// Ranks whose solutions are kept for replay.
+pub const replay_top = 10
+
+/// Lines per day that may carry a solution (a newcomer in the top 10 writes
+/// one), so a stream of ever-faster fakes can't grow the file much.
+pub const max_solutions_per_day = 200
+
 pub type Entry {
   /// `token`: SHA-256 (hex) of the client's secret, so one browser gets one
-  /// entry a day and can find it again. `at`: server time, ms.
+  /// entry a day and can find it again. `at`: server time, ms. `sol`: the
+  /// verified solution, or "" when it isn't kept.
   Entry(
     id: String,
     day: Int,
@@ -38,6 +51,7 @@ pub type Entry {
     moves: Int,
     at: Int,
     token: String,
+    sol: String,
   )
 }
 
@@ -68,6 +82,8 @@ pub opaque type State {
     days: Dict(Int, List(Entry)),
     tokens: Dict(#(Int, String), String),
     ips: Dict(#(Int, String), Int),
+    /// Lines with a solution written per day (see `max_solutions_per_day`).
+    sols: Dict(Int, Int),
   )
 }
 
@@ -79,10 +95,11 @@ pub type Message {
     reply: Subject(Result(Placed, SubmitError)),
   )
   GetBoard(day: Int, me: Option(String), limit: Int, reply: Subject(Board))
+  GetSolution(day: Int, rank: Int, reply: Subject(Result(Entry, Nil)))
 }
 
 pub fn new(append: fn(String) -> Result(Nil, String)) -> State {
-  State(append, dict.new(), dict.new(), dict.new())
+  State(append, dict.new(), dict.new(), dict.new(), dict.new())
 }
 
 // --- Pure operations -------------------------------------------------------
@@ -108,9 +125,18 @@ pub fn load(state: State, content: String, today: Int) -> #(State, Int, Int) {
     list.fold(records, state, fn(st, r) {
       case r {
         Add(e) ->
-          case set.contains(deleted, e.id) || e.day < today - keep_days {
+          case e.day < today - keep_days {
             True -> st
-            False -> insert(st, e).0
+            False -> {
+              let st = case e.sol {
+                "" -> st
+                _ -> count_solution(st, e.day)
+              }
+              case set.contains(deleted, e.id) {
+                True -> st
+                False -> insert(st, e).0
+              }
+            }
           }
         Delete(_) -> st
       }
@@ -141,10 +167,15 @@ pub fn submit(
       case used >= max_per_ip, list.length(entries) >= max_per_day {
         True, _ -> #(state, Error(IpLimit))
         _, True -> #(state, Error(DayFull))
-        False, False ->
+        False, False -> {
+          let entry = keep_solution(state, entries, entry)
           case state.append(encode(entry)) {
             Error(reason) -> #(state, Error(Storage(reason)))
             Ok(Nil) -> {
+              let state = case entry.sol {
+                "" -> state
+                _ -> count_solution(state, day)
+              }
               let #(state, rank) = insert(state, entry)
               let ips = dict.insert(state.ips, #(day, ip), used + 1)
               #(
@@ -153,6 +184,7 @@ pub fn submit(
               )
             }
           }
+        }
       }
     }
   }
@@ -171,6 +203,20 @@ pub fn board(state: State, day: Int, me: Option(String), limit: Int) -> Board {
   Board(day, list.length(entries), top, mine)
 }
 
+/// The entry at `rank` with its solution, if that rank keeps one.
+pub fn solution(state: State, day: Int, rank: Int) -> Result(Entry, Nil) {
+  case rank >= 1 && rank <= replay_top {
+    False -> Error(Nil)
+    True -> {
+      let entries = dict.get(state.days, day) |> result.unwrap([])
+      case list.drop(entries, rank - 1) {
+        [e, ..] if e.sol != "" -> Ok(e)
+        _ -> Error(Nil)
+      }
+    }
+  }
+}
+
 /// Faster time first, then fewer moves, then whoever submitted first.
 pub fn compare(a: Entry, b: Entry) -> order.Order {
   int.compare(a.ms, b.ms)
@@ -178,21 +224,51 @@ pub fn compare(a: Entry, b: Entry) -> order.Order {
   |> order.lazy_break_tie(fn() { int.compare(a.at, b.at) })
 }
 
+/// Drops the solution unless the entry would enter the top `replay_top`
+/// and the day still has room for solutions in the file.
+fn keep_solution(state: State, entries: List(Entry), entry: Entry) -> Entry {
+  let rank =
+    entries
+    |> list.take(replay_top)
+    |> list.take_while(fn(e) { compare(e, entry) != order.Gt })
+    |> list.length
+  let written = dict.get(state.sols, entry.day) |> result.unwrap(0)
+  case rank < replay_top && written < max_solutions_per_day {
+    True -> entry
+    False -> Entry(..entry, sol: "")
+  }
+}
+
+fn count_solution(state: State, day: Int) -> State {
+  let written = dict.get(state.sols, day) |> result.unwrap(0)
+  State(..state, sols: dict.insert(state.sols, day, written + 1))
+}
+
+/// Inserts in rank order; whoever is pushed out of the top `replay_top`
+/// loses its solution (memory holds at most that many per day).
 fn insert(state: State, entry: Entry) -> #(State, Int) {
   let entries = dict.get(state.days, entry.day) |> result.unwrap([])
   let #(ahead, behind) =
     list.split_while(entries, fn(e) { compare(e, entry) != order.Gt })
+  let rank = list.length(ahead) + 1
+  let merged = case rank > replay_top {
+    True -> list.append(ahead, [Entry(..entry, sol: ""), ..behind])
+    False ->
+      list.append(ahead, [entry, ..behind])
+      |> list.index_map(fn(e, i) {
+        case i >= replay_top && e.sol != "" {
+          True -> Entry(..e, sol: "")
+          False -> e
+        }
+      })
+  }
   let state =
     State(
       ..state,
-      days: dict.insert(
-        state.days,
-        entry.day,
-        list.append(ahead, [entry, ..behind]),
-      ),
+      days: dict.insert(state.days, entry.day, merged),
       tokens: dict.insert(state.tokens, #(entry.day, entry.token), entry.id),
     )
-  #(state, list.length(ahead) + 1)
+  #(state, rank)
 }
 
 fn find(entries: List(Entry), id: String) -> Result(#(Int, Entry), Nil) {
@@ -208,6 +284,7 @@ fn prune(state: State, today: Int) -> State {
     days: dict.filter(state.days, fn(day, _) { day >= oldest }),
     tokens: dict.filter(state.tokens, fn(key, _) { key.0 >= oldest }),
     ips: dict.filter(state.ips, fn(key, _) { key.0 >= today - 1 }),
+    sols: dict.filter(state.sols, fn(day, _) { day >= oldest }),
   )
 }
 
@@ -219,6 +296,10 @@ type Record {
 }
 
 pub fn encode(e: Entry) -> String {
+  let sol = case e.sol {
+    "" -> []
+    sol -> [#("sol", json.string(sol))]
+  }
   json.object([
     #("id", json.string(e.id)),
     #("day", json.int(e.day)),
@@ -227,6 +308,7 @@ pub fn encode(e: Entry) -> String {
     #("moves", json.int(e.moves)),
     #("at", json.int(e.at)),
     #("tok", json.string(e.token)),
+    ..sol
   ])
   |> json.to_string
 }
@@ -240,7 +322,8 @@ fn record_decoder() -> decode.Decoder(Record) {
     use moves <- decode.field("moves", decode.int)
     use at <- decode.field("at", decode.int)
     use token <- decode.field("tok", decode.string)
-    decode.success(Add(Entry(id, day, name, ms, moves, at, token)))
+    use sol <- decode.optional_field("sol", "", decode.string)
+    decode.success(Add(Entry(id, day, name, ms, moves, at, token, sol)))
   }
   let tombstone = {
     use id <- decode.field("del", decode.string)
@@ -268,6 +351,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     GetBoard(day, me, limit, reply) -> {
       process.send(reply, board(state, day, me, limit))
+      actor.continue(state)
+    }
+    GetSolution(day, rank, reply) -> {
+      process.send(reply, solution(state, day, rank))
       actor.continue(state)
     }
   }

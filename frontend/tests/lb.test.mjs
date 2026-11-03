@@ -53,8 +53,9 @@ test('state from storage is validated', () => {
 test('boards from the API are validated', () => {
   const row = { rank: 1, name: 'Ana', ms: 20_000, moves: 40 };
   const b = Lb.parseBoard({ day: 5, today: 5, total: 2, top: [row, { rank: 'x' }], me: row });
-  assert.deepEqual(b.top, [row]);
-  assert.deepEqual(b.me, row);
+  assert.deepEqual(b.top, [{ ...row, replay: false }]);
+  assert.deepEqual(b.me, { ...row, replay: false });
+  assert.equal(b.final, false);
   assert.equal(Lb.parseBoard({ day: 5 }), null);
   assert.equal(Lb.parseBoard(null), null);
   assert.equal(Lb.parseBoard({ day: 5, today: 5, total: 0, top: Array(80).fill(row), me: null }).top.length, Lb.TOP);
@@ -77,4 +78,25 @@ test('only today and yesterday are open', () => {
   assert.ok(!Lb.isOpen(8, 10));
   assert.ok(!Lb.isOpen(11, 10));
   assert.ok(!Lb.isOpen('10', 10));
+});
+
+test('replays only for a final day and the top ten', () => {
+  const rows = [1, 2, 11].map((rank) => ({ rank, name: 'Ana', ms: 20_000 + rank, moves: 40, replay: true }));
+  const open = Lb.parseBoard({ day: 5, today: 5, total: 3, top: rows, me: null });
+  assert.deepEqual(open.top.map((r) => r.replay), [false, false, false]);
+  const done = Lb.parseBoard({ day: 4, today: 5, final: true, total: 3, top: rows, me: null });
+  assert.deepEqual(done.top.map((r) => r.replay), [true, true, false]);
+  assert.equal(Lb.parseBoard({ day: 4, today: 5, final: 'yes', total: 3, top: rows, me: null }).top[0].replay, false);
+});
+
+test('recorded solves are validated', () => {
+  const solve = { day: 4, rank: 1, name: 'Ana', ms: 20_000, moves: 22, sol: "R U R' U' x2 3Rw M2" };
+  assert.deepEqual(Lb.parseSolve(solve, 4), solve);
+  assert.equal(Lb.parseSolve(solve, 5), null, 'another day');
+  assert.equal(Lb.parseSolve({ ...solve, rank: 11 }, 4), null);
+  assert.equal(Lb.parseSolve({ ...solve, sol: 'R U <img>' }, 4), null);
+  assert.equal(Lb.parseSolve({ ...solve, sol: '   ' }, 4), null);
+  assert.equal(Lb.parseSolve({ ...solve, sol: 'R '.repeat(9000) }, 4), null);
+  assert.equal(Lb.parseSolve({ ...solve, sol: 42 }, 4), null);
+  assert.equal(Lb.parseSolve(null, 4), null);
 });

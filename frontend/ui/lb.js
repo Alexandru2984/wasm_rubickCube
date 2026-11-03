@@ -15,6 +15,9 @@ const LETTER = 'A-Za-z0-9\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u024F';
 const NAME_RE = new RegExp(`^[${LETTER} ._'\\-]+$`, 'u');
 const HAS_LETTER_RE = new RegExp(`[${LETTER}]`, 'u');
 const TOKEN_RE = /^[0-9a-f]{32}$/;
+// A stored solution: the server's canonical form of what it verified.
+const SOL_RE = /^[RLUDFBMESxyzw0-9' ]{1,16000}$/;
+export const REPLAY_TOP = 10;
 const ID_RE = /^[0-9a-f]{16}$/;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -93,14 +96,37 @@ function withTimeout() {
 
 const cleanRow = (r) =>
   isObj(r) && isInt(r.rank, 1, 1e6) && typeof r.name === 'string' && r.name.length <= 64 && isInt(r.ms, 0, 3_600_000) && isInt(r.moves, 0, 5000)
-    ? { rank: r.rank, name: r.name, ms: r.ms, moves: r.moves }
+    ? { rank: r.rank, name: r.name, ms: r.ms, moves: r.moves, replay: r.replay === true && r.rank <= REPLAY_TOP }
     : null;
 
-/** Validated board from the API's JSON, or null. */
+/**
+ * Validated board from the API's JSON, or null. `final`: the day takes no
+ * more entries, and rows with `replay` can be watched.
+ */
 export function parseBoard(d) {
   if (!isObj(d) || !Number.isInteger(d.day) || !Number.isInteger(d.today) || !isInt(d.total, 0, 1e6) || !Array.isArray(d.top)) return null;
-  const top = d.top.slice(0, TOP).map(cleanRow).filter(Boolean);
-  return { day: d.day, today: d.today, total: d.total, top, me: d.me == null ? null : cleanRow(d.me) };
+  const final = d.final === true;
+  const top = d.top.slice(0, TOP).map(cleanRow).filter(Boolean).map((r) => ({ ...r, replay: final && r.replay }));
+  return { day: d.day, today: d.today, final, total: d.total, top, me: d.me == null ? null : cleanRow(d.me) };
+}
+
+/** Validated recorded solve for `day`, or null. */
+export function parseSolve(d, day) {
+  if (!isObj(d) || d.day !== day || typeof d.sol !== 'string' || !SOL_RE.test(d.sol) || !d.sol.trim()) return null;
+  const row = cleanRow(d);
+  return row && row.rank <= REPLAY_TOP ? { day, rank: row.rank, name: row.name, ms: row.ms, moves: row.moves, sol: d.sol } : null;
+}
+
+/** GET one of a final day's best solves. Resolves to a solve, or null. */
+export async function fetchSolve(day, rank) {
+  if (!Number.isInteger(day) || !isInt(rank, 1, REPLAY_TOP)) return null;
+  try {
+    const resp = await fetch(`/api/daily/${day}/solve/${rank}`, { signal: withTimeout(), cache: 'no-store', credentials: 'omit' });
+    if (!resp.ok) return null;
+    return parseSolve(await resp.json(), day);
+  } catch {
+    return null;
+  }
 }
 
 /** GET a day's board. Resolves to a board, or null when unavailable. */

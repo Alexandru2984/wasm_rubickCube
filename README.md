@@ -21,7 +21,7 @@ A 3D Rubik's Cube you can play, time and learn in the browser. The cube is a Bev
 
 **Coming back every day**
 - **Daily challenge**: the same scramble for everyone each day, a countdown, the last 7 days and a streak.
-- **Global leaderboard** for the daily (today and yesterday).
+- **Global leaderboard** for the daily (today and yesterday). Once a day is over, its top 10 solves can be watched move by move on the cube.
   - Opt-in with just a nickname.
   - The server **replays your moves** on the day's scramble and ranks only solves that really solve the cube.
   - Results recorded offline are published once you're back online.
@@ -102,7 +102,7 @@ deploy/backend/deploy-backend.sh      # test + build the leaderboard, install, r
 sudo cube-lb-moderate list            # today's entries; `delete <id>` hides one
 ```
 
-**Leaderboard backup.** `cube-leaderboard-backup.timer` runs daily, just after the UTC day closes.
+**Leaderboard backup.** `cube-leaderboard-backup.timer` runs daily at 01:20 UTC, just after the previous day becomes final.
 1. It takes a validated snapshot of `entries.jsonl` into `/srv/backups/cube-leaderboard`, keeping 30 days locally.
 2. It copies the snapshots to Google Drive through an rclone crypt remote, encrypted on the server. The copy uses `copy --immutable`, so nothing remote is ever deleted.
 3. It downloads every file back and compares the bytes.

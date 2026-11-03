@@ -3,8 +3,10 @@
 Description=Daily cube.micutu.com leaderboard backup
 
 [Timer]
-# Just after the UTC day closes, so each snapshot holds a finished day.
-OnCalendar=*-*-* 00:20:00 UTC
+# Just after yesterday's challenge becomes final (01:00 UTC, see
+# backend/src/cube_leaderboard/web.gleam), so each snapshot holds a
+# finished day.
+OnCalendar=*-*-* 01:20:00 UTC
 RandomizedDelaySec=10m
 Persistent=true
 Unit=cube-leaderboard-backup.service
