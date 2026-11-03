@@ -4,6 +4,8 @@
 #   deploy/deploy.sh            build, publish a new release, switch to it
 #   deploy/deploy.sh --no-build publish the existing frontend/dist as is
 #   deploy/deploy.sh --rollback switch back to the previous release
+#   deploy/deploy.sh --migrate  only convert a plain current/ directory to
+#                               the releases layout (no visible change)
 #
 # Layout (nginx root = $SITE/current):
 #   $SITE/current -> releases/current -> <stamp>-<sha>/
@@ -58,6 +60,9 @@ exec 9>"$REL/.deploy.lock"
 flock -n 9 || die "another deploy is running"
 
 case "${1:-}" in
+--migrate)
+    exit 0
+    ;;
 --rollback)
     live="$(readlink "$REL/current")"
     prev="$(find "$REL" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' | sort -rn | awk '{print $2}' |
