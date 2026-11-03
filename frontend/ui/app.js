@@ -12,6 +12,7 @@
 import { t, setLang, getLang, achText } from './i18n.js';
 import * as St from './stats.js';
 import * as Lb from './lb.js';
+import * as Card from './card.js';
 import { Sound, vibrate, confetti } from './fx.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -27,7 +28,7 @@ const NOTATION_RE = /^[RLUDFBMESxyzrludfbw0-9'’′ ()[\],.\n\t]*$/;
 const ATTRS = new Set([
   'id', 'type', 'role', 'title', 'for', 'name', 'value', 'min', 'max', 'step', 'placeholder', 'rows',
   'href', 'rel', 'target', 'tabindex', 'spellcheck', 'autocomplete', 'inputmode', 'accept', 'viewBox',
-  'preserveAspectRatio', 'points', 'd', 'autocapitalize', 'enterkeyhint', 'maxlength',
+  'preserveAspectRatio', 'points', 'd', 'autocapitalize', 'enterkeyhint', 'maxlength', 'download',
 ]);
 
 /** Element factory. Text only via textContent; attributes from an allow-list. */
@@ -442,6 +443,8 @@ function showSolvedModal(info) {
   if (dailyDay !== null && lb.pending && lb.pending.day === dailyDay && lb.name) publishNow();
   const modal = $('#solvedModal');
   if (!modal.open) modal.showModal();
+  // Render the share card once the confetti settles, so Share is instant.
+  setTimeout(() => cardFile(dailyDay !== null ? dailyCard(dailyDay) : solvedCard(info)), 1500);
   sound.fanfare();
   vibrate(settings.haptics, [20, 40, 20, 40, 60]);
   confetti($('#confetti'));
@@ -456,7 +459,7 @@ function shareSolved() {
   }
   const text = t('shareSolve', { size: `${n}×${n}`, t: St.fmt(effTime), m: solve.m });
   const url = solve.s ? `${location.origin}/#scramble=${encodeURIComponent(solve.s)}&n=${n}` : location.origin + '/';
-  shareText(text, url);
+  shareText(text, url, solvedCard(lastSolved));
 }
 
 function shareDaily(day) {
@@ -468,15 +471,76 @@ function shareDaily(day) {
     n: St.dailyNumber(day), t: St.fmt(St.eff(r)), m: r.m,
     streak: (st > 1 ? t('shareStreak', { n: st }) : '') + (entry ? t('shareRank', { rank: entry.rank, total: entry.total }) : ''),
   });
-  shareText(text, `${location.origin}/#daily`);
+  shareText(text, `${location.origin}/#daily`, dailyCard(day));
 }
 
-async function shareText(text, url) {
+// Result cards ---------------------------------------------------------------
+
+function cardBase(ms, moves, dateMs) {
+  const tps = ms > 0 ? (moves / (ms / 1000)).toLocaleString(getLang(), { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0';
+  return {
+    time: St.fmt(ms),
+    stats: t('cardStats', { m: moves, tps }),
+    date: new Intl.DateTimeFormat(getLang(), { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(dateMs),
+    colors: SCHEME_PREVIEW[settings.scheme] || SCHEME_PREVIEW[0],
+    site: location.host,
+  };
+}
+
+function dailyCard(day) {
+  const r = daily.get(day);
+  if (!r) return null;
+  const st = St.streak([...daily.keys()]);
+  const entry = lb.entries.get(day);
+  const pills = [];
+  if (entry) pills.push(t('cardRank', { rank: entry.rank, total: entry.total }));
+  if (st > 1) pills.push(t('cardStreak', { n: st }));
+  return { ...cardBase(St.eff(r), r.m, day * 86_400_000), kicker: t('cardDaily', { n: St.dailyNumber(day) }), pills, name: `cube-daily-${St.dailyNumber(day)}.png` };
+}
+
+function solvedCard({ solve, effTime, n, isPb }) {
+  if (!Number.isFinite(effTime)) return null;
+  return { ...cardBase(effTime, solve.m, Date.now()), kicker: t('cardSolved', { size: `${n}×${n}` }), pills: isPb ? [`★ ${t('newPb')}`] : [], name: `cube-${n}x${n}.png` };
+}
+
+// The last card rendered, so sharing right after a solve doesn't wait.
+let cardCache = { key: '', file: null };
+
+async function cardFile(card) {
+  if (!card) return null;
+  const key = JSON.stringify(card);
+  if (cardCache.key !== key) cardCache = { key, file: await Card.toFile(card, card.name) };
+  return cardCache.file;
+}
+
+/** Downloads the card as a PNG (the "Save image" buttons). */
+async function saveCard(card) {
+  const file = await cardFile(card);
+  if (!file) {
+    toast(t('shareFail'), { em: '⚠️' });
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  // Inside the open dialog when there is one: the page behind it is inert.
+  const host = document.querySelector('dialog[open]') || document.body;
+  const a = h('a', { href: url, download: file.name, hidden: true });
+  host.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  unlock('sharer');
+  track('card_download');
+}
+
+async function shareText(text, url, card = null) {
+  const file = navigator.share && coarse.matches ? await cardFile(card) : null;
   if (navigator.share && coarse.matches) {
+    const withFile = file && navigator.canShare && navigator.canShare({ files: [file] });
     try {
-      await navigator.share({ text, url });
+      // Apps that take a file often drop the url field: keep it in the text.
+      await navigator.share(withFile ? { files: [file], text: `${text}\n${url}` } : { text, url });
       unlock('sharer');
-      track('share');
+      track('share', { card: withFile ? 1 : 0 });
       return;
     } catch (e) {
       if (e && e.name === 'AbortError') return;
@@ -986,7 +1050,9 @@ function buildDaily() {
   );
   const actions = res
     ? h('div', { class: 'row wrap daily-actions' },
-      h('button', { class: 'btn primary grow', type: 'button', on: { click: () => shareDaily(today) } }, icon('share'), t('dailyShare')),
+      h('div', { class: 'split grow' },
+        h('button', { class: 'btn primary', type: 'button', on: { click: () => shareDaily(today) } }, icon('share'), t('dailyShare')),
+        h('button', { class: 'btn primary', type: 'button', 'aria-label': t('cardSave'), title: t('cardSave'), on: { click: () => saveCard(dailyCard(today)) } }, icon('download'))),
       h('button', { class: 'btn grow', type: 'button', on: { click: start } }, icon('dice'), t('dailyPractice')))
     : h('button', { class: 'btn primary block', type: 'button', on: { click: start } }, icon('play'), t('dailyStart'));
 
@@ -1608,6 +1674,7 @@ addEventListener('pointerdown', () => { if (settings.sound) sound.unlock(); }, {
 function applyStaticI18n() {
   $$('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
   $$('[data-i18n-aria]').forEach((el) => { el.setAttribute('aria-label', t(el.dataset.i18nAria)); });
+  $('#solvedCard').title = t('cardSave');
   $$('[data-panel]').forEach((el) => { if (!el.hasAttribute('title')) el.title = el.getAttribute('aria-label') || ''; });
 }
 
@@ -1784,6 +1851,9 @@ $('#solvedAgain').addEventListener('click', () => {
   else doScramble();
 });
 $('#solvedShare').addEventListener('click', shareSolved);
+$('#solvedCard').addEventListener('click', () => {
+  if (lastSolved) saveCard(lastSolved.dailyDay !== null ? dailyCard(lastSolved.dailyDay) : solvedCard(lastSolved));
+});
 addEventListener('online', retryPending);
 $('#solvedModal').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 

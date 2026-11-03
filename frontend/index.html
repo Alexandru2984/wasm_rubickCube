@@ -210,7 +210,10 @@
           <div class="solved-badges" id="solvedBadges"></div>
           <div class="solved-lb" id="solvedLb" aria-live="polite" hidden></div>
           <div class="solved-actions">
-            <button class="btn" type="button" id="solvedShare"><svg class="ic"><use href="#i-share"/></svg><span data-i18n="share">Share</span></button>
+            <div class="split">
+              <button class="btn" type="button" id="solvedShare"><svg class="ic"><use href="#i-share"/></svg><span data-i18n="share">Share</span></button>
+              <button class="btn" type="button" id="solvedCard" aria-label="Save image" data-i18n-aria="cardSave"><svg class="ic"><use href="#i-download"/></svg></button>
+            </div>
             <button class="btn primary" type="button" id="solvedAgain"><svg class="ic"><use href="#i-dice"/></svg><span data-i18n="again">Again</span></button>
           </div>
           <button class="link-btn" type="button" id="solvedClose" data-i18n="close">Close</button>

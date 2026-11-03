@@ -430,7 +430,7 @@ textarea:focus, input[type="text"]:focus { border-color: rgba(255, 214, 10, 0.6)
 .streak { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: #ff9f43; }
 .streak .ic { width: 18px; height: 18px; }
 /* Side by side when there's room, else stacked full width (phones). */
-.daily-actions > .btn { flex: 1 1 180px; }
+.daily-actions > .btn, .daily-actions > .split { flex: 1 1 180px; }
 .week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 12px; }
 .day { text-align: center; font-size: 11px; color: var(--muted); }
 .day i { display: block; height: 30px; border-radius: 9px; margin-bottom: 4px; background: var(--panel-2); border: 1px solid var(--line); }
@@ -529,6 +529,10 @@ textarea:focus, input[type="text"]:focus { border-color: rgba(255, 214, 10, 0.6)
 .badge.gold { background: rgba(255, 214, 10, 0.14); color: var(--accent); border-color: rgba(255, 214, 10, 0.4); }
 .badge.red { background: rgba(255, 93, 93, 0.12); color: var(--bad); border-color: rgba(255, 93, 93, 0.4); }
 .solved-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; margin-top: 14px; }
+/* A button with a smaller companion glued to its right (Share | Save image). */
+.split { display: flex; min-width: 0; }
+.split > .btn:first-child { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split > .btn + .btn { flex: none; padding-inline: 13px; border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: 1px; }
 
 /* ── Toasts ─────────────────────────────────────────────────────────────── */
 
