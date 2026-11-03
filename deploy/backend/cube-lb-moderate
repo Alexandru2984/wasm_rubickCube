@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Moderates the daily leaderboard (installed to /usr/local/sbin; run with sudo).
+
+    cube-lb-moderate list [DAY]   entries of a UTC day (default: today), ranked
+    cube-lb-moderate delete ID..  hide entries, then restart the service
+
+Deleting appends a tombstone line ({"del": ID}); nothing is rewritten, so the
+file stays an append-only audit log. The service applies tombstones when it
+replays the file at startup.
+"""
+
+import json
+import re
+import subprocess
+import sys
+import time
+
+DATA = "/var/lib/cube-leaderboard/entries.jsonl"
+UNIT = "cube-leaderboard.service"
+
+
+def records():
+    entries, deleted = [], set()
+    with open(DATA, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if "del" in rec:
+                deleted.add(rec["del"])
+            else:
+                entries.append(rec)
+    return [e for e in entries if e.get("id") not in deleted]
+
+
+def fmt_ms(ms):
+    return f"{ms // 60000}:{ms // 1000 % 60:02d}.{ms % 1000 // 10:02d}" if ms >= 60000 else f"{ms / 1000:.2f}"
+
+
+def cmd_list(args):
+    day = int(args[0]) if args else int(time.time() // 86400)
+    rows = sorted((e for e in records() if e["day"] == day), key=lambda e: (e["ms"], e["moves"], e["at"]))
+    print(f"day {day}: {len(rows)} entries")
+    for rank, e in enumerate(rows, 1):
+        # repr() keeps any odd character visible.
+        print(f"{rank:5d}  {e['id']}  {fmt_ms(e['ms']):>9}  {e['moves']:4d}  {e['name']!r}")
+
+
+def cmd_delete(ids):
+    if not ids or not all(re.fullmatch(r"[0-9a-f]{16}", i) for i in ids):
+        sys.exit("delete: give one or more 16-hex-digit entry ids")
+    known = {e["id"]: e for e in records()}
+    missing = [i for i in ids if i not in known]
+    if missing:
+        sys.exit(f"delete: unknown or already deleted: {' '.join(missing)}")
+    with open(DATA, "a", encoding="utf-8") as f:
+        for i in ids:
+            f.write(json.dumps({"del": i}) + "\n")
+            print(f"deleted {i} ({known[i]['name']!r}, day {known[i]['day']})")
+    subprocess.run(["systemctl", "restart", UNIT], check=True)
+    print(f"{UNIT} restarted")
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in ("list", "delete"):
+        sys.exit(__doc__.strip())
+    (cmd_list if sys.argv[1] == "list" else cmd_delete)(sys.argv[2:])
+
+
+if __name__ == "__main__":
+    main()

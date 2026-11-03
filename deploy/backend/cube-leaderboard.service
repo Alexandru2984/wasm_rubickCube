@@ -1,0 +1,63 @@
+# Installed to /etc/systemd/system/ by deploy/backend/deploy-backend.sh.
+[Unit]
+Description=cube.micutu.com daily leaderboard (Gleam)
+Documentation=https://github.com/Alexandru2984/wasm_rubickCube/tree/main/backend
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Dedicated system user; the code in /opt is root-owned and read-only, only
+# the data directory is writable.
+User=cubelb
+Group=cubelb
+Environment=HOME=/var/lib/cube-leaderboard
+Environment=CUBE_LB_PORT=8737
+Environment=CUBE_LB_DATA=/var/lib/cube-leaderboard
+Environment=CUBE_LB_ORIGIN=https://cube.micutu.com
+# Small VM on a shared host: two schedulers, no busy-waiting, no crash dumps.
+Environment="ERL_FLAGS=+S 2:2 +SDcpu 2:2 +SDio 4 +A 2 +sbwt none +sbwtdcpu none +sbwtdio none"
+Environment=ERL_CRASH_DUMP_SECONDS=0
+ExecStart=/opt/cube-leaderboard/entrypoint.sh run
+WorkingDirectory=/var/lib/cube-leaderboard
+Restart=on-failure
+RestartSec=3
+
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/cube-leaderboard
+PrivateTmp=yes
+UMask=0027
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+# No MemoryDenyWriteExecute: the BEAM JIT writes machine code at runtime.
+# AF_UNIX: erts' internal pipes. AF_INET: the loopback listener.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressAllow=localhost
+IPAddressDeny=any
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+TasksMax=64
+LimitNOFILE=4096
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
