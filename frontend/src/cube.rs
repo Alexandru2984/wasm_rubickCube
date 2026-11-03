@@ -3,6 +3,7 @@
 //! orientations are snapped back to 90° multiples after every move — so a
 //! session of thousands of moves never drifts.
 
+use bevy::pbr::NotShadowCaster;
 use bevy::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -15,18 +16,21 @@ const STICKER_RADIUS: f32 = 0.1;
 const FACE_OFFSET: f32 = CUBIE_SIZE / 2.0 + 0.004;
 
 /// Geometry detail by cube size: (bevel segments per 45°, segments per
-/// sticker corner). Big cubes have thousands of cubies, each a few pixels
-/// wide, so they get cheaper meshes.
+/// sticker corner). A cubie costs 12·(2s+1)² triangles, so detail drops as
+/// the count grows and every size stays under [`TRIANGLE_BUDGET`]; from 9x9
+/// up a bevel is a couple of pixels wide and cubies are plain boxes.
 fn detail_level(n: i32) -> usize {
     match n {
-        ..=5 => 0,
-        6..=9 => 1,
-        10..=13 => 2,
-        14..=16 => 3,
+        ..=3 => 0,
+        4..=5 => 1,
+        6..=8 => 2,
+        9..=13 => 3,
         _ => 4,
     }
 }
-const DETAIL: [(u32, u32); 5] = [(4, 6), (3, 4), (2, 3), (1, 2), (0, 2)];
+const DETAIL: [(u32, u32); 5] = [(3, 6), (2, 5), (1, 4), (0, 3), (0, 0)];
+#[cfg(test)]
+const TRIANGLE_BUDGET: usize = 40_000;
 
 pub const MIN_SIZE: i32 = 2;
 pub const MAX_SIZE: i32 = 20;
@@ -356,12 +360,16 @@ pub fn spawn_cube(commands: &mut Commands, assets: &CubeAssets, n: i32) {
                         continue;
                     }
                     commands
-                        .spawn(PbrBundle {
-                            mesh: sticker_mesh.clone(),
-                            material: assets.stickers[face].clone(),
-                            transform: Transform { translation: offset, rotation, ..default() },
-                            ..default()
-                        })
+                        .spawn((
+                            PbrBundle {
+                                mesh: sticker_mesh.clone(),
+                                material: assets.stickers[face].clone(),
+                                transform: Transform { translation: offset, rotation, ..default() },
+                                ..default()
+                            },
+                            // Flush with the body: its shadow is the body's.
+                            NotShadowCaster,
+                        ))
                         .set_parent(id);
                 }
             }
@@ -372,6 +380,23 @@ pub fn spawn_cube(commands: &mut Commands, assets: &CubeAssets, n: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn triangles(mesh: &Mesh) -> usize {
+        mesh.indices().map(|i| i.len() / 3).unwrap_or(0)
+    }
+
+    #[test]
+    fn every_size_stays_within_the_triangle_budget() {
+        for n in MIN_SIZE..=MAX_SIZE {
+            let (cubie_seg, sticker_seg) = DETAIL[detail_level(n)];
+            let cubie = triangles(&crate::mesh::rounded_box(CUBIE_SIZE, BEVEL, cubie_seg));
+            let sticker = triangles(&crate::mesh::rounded_square(STICKER_SIZE, STICKER_RADIUS, sticker_seg));
+            let cubies = (n.pow(3) - (n - 2).max(0).pow(3)) as usize;
+            let stickers = 6 * (n * n) as usize;
+            let total = cubies * cubie + stickers * sticker;
+            assert!(total <= TRIANGLE_BUDGET, "{n}x{n}: {total} triangles");
+        }
+    }
 
     fn sample_moves() -> Vec<CubeMove> {
         let mut v = Vec::new();
