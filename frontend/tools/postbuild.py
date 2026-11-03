@@ -11,9 +11,13 @@
    attribute is left in index.html.
 4. Injects the precache list and cache version into service-worker.js.
 5. Points 404.html at the same hashed stylesheet and writes sitemap.xml.
-6. Writes .gz siblings for nginx gzip_static (reproducible: mtime 0).
+6. Writes .gz siblings for nginx gzip_static (reproducible: mtime 0), and
+   .br siblings (brotli, quality 11) that the vhost hands to clients that
+   take brotli: ~30% smaller than gzip on the WASM. The brotli CLI is
+   optional; without it the .br files are skipped with a warning and nginx
+   falls back to gzip.
 
-Standard library only; run as: python3 tools/postbuild.py dist
+Standard library (plus the brotli CLI); run as: python3 tools/postbuild.py dist
 """
 
 import base64
@@ -22,6 +26,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,7 +140,7 @@ def write_sw(dist: Path) -> None:
     files = sorted(
         f
         for f in dist.rglob("*")
-        if f.is_file() and f.suffix != ".gz" and f.relative_to(dist).as_posix() not in NO_PRECACHE
+        if f.is_file() and f.suffix not in (".gz", ".br") and f.relative_to(dist).as_posix() not in NO_PRECACHE
     )
     urls = ["/" + f.relative_to(dist).as_posix() for f in files]
     h = hashlib.sha256()
@@ -152,11 +157,24 @@ def write_sw(dist: Path) -> None:
 
 
 def precompress(dist: Path) -> None:
-    for f in dist.rglob("*"):
-        if f.is_file() and f.suffix in COMPRESSIBLE and f.stat().st_size >= 512:
-            data = f.read_bytes()
-            gz = Path(str(f) + ".gz")
-            gz.write_bytes(gzip.compress(data, compresslevel=9, mtime=0))
+    brotli = shutil.which("brotli")
+    if not brotli:
+        print("postbuild: warning: no brotli CLI, skipping .br files (apt install brotli)")
+    files = [f for f in dist.rglob("*") if f.is_file() and f.suffix in COMPRESSIBLE and f.stat().st_size >= 512]
+    raw = br = 0
+    for f in files:
+        data = f.read_bytes()
+        gz = Path(str(f) + ".gz")
+        gz.write_bytes(gzip.compress(data, compresslevel=9, mtime=0))
+        if brotli:
+            out = Path(str(f) + ".br")
+            subprocess.run([brotli, "-q", "11", "-f", "-o", str(out), str(f)], check=True)
+            if subprocess.run([brotli, "-d", "-c", str(out)], check=True, capture_output=True).stdout != data:
+                fail(f"brotli round trip failed for {f.name}")
+            raw += len(data)
+            br += out.stat().st_size
+    if brotli:
+        print(f"postbuild: brotli {raw} -> {br} bytes over {len(files)} files")
 
 
 def main() -> None:
@@ -165,7 +183,7 @@ def main() -> None:
     dist = Path(sys.argv[1])
     index = dist / "index.html"
     html = index.read_text()
-    for stale in dist.glob("*.gz"):
+    for stale in [*dist.rglob("*.gz"), *dist.rglob("*.br")]:
         stale.unlink()
     html, tag = hash_ui(dist, html)
     # Chrome ignores (and warns about) SRI on as="fetch" preloads; the WASM

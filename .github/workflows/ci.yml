@@ -116,6 +116,9 @@ jobs:
           echo "${TRUNK_SHA256}  $RUNNER_TEMP/trunk.tar.gz" | sha256sum -c -
           tar xzf "$RUNNER_TEMP/trunk.tar.gz" -C "$RUNNER_TEMP" trunk
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      # postbuild writes .br siblings with the brotli CLI.
+      - name: Install brotli
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends brotli
       # build.sh = trunk build --release + tools/postbuild.py, which fails on
       # any inline script/handler/style (CSP) or a leaked local path.
       - run: ./build.sh

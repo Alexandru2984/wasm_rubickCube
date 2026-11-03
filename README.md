@@ -58,7 +58,8 @@ The site is static apart from the leaderboard API, and all of it is treated as a
 - **Drag detection with real geometry.** A screen ray is cast against the cubies' AABBs. The hit face's normal limits the candidate axes to the two lying in that face, and the drag direction picks between them.
 - **State extraction for the solver.** Each cubie's home position is recovered from its orientation (`home = q⁻¹ · pos`). The 54-facelet string uses the *current* centers, which is why slice moves solve correctly.
 - **Framing.** The page reports how much of the screen its UI covers, and the camera frames the cube in the free band, easing over when the keypad or the player opens. Lights are attached to the camera, so every angle shows three clearly shaded faces.
-- **Size.** Trimmed Bevy features, full LTO, `opt-level = "z"` and `wasm-opt -Oz` produce 7.7 MB of WASM, about 2.5 MB gzipped, served precompressed through nginx `gzip_static`.
+- **Size.** Trimmed Bevy features, full LTO, `opt-level = "z"` and `wasm-opt -Oz` produce 7.7 MB of WASM. It ships precompressed: 1.8 MB as brotli (quality 11) to browsers that take it, 2.5 MB as gzip otherwise. nginx has no brotli module, so the vhost redirects to the `.br` sibling internally.
+- **Geometry.** Rounded cubies and stickers are built at startup; their detail drops with cube size so every size stays under 40k triangles.
 
 Native unit tests cover the move algebra, notation parser, scrambles, persistence codec, bridge parsing, camera fit and solver round-trips (`cargo test`). Node tests cover statistics, averages, validation, CSV escaping and the leaderboard client (`node --test`). The Gleam suite covers scramble vectors shared with the engine, replay, validation, the store and the HTTP API (`gleam test`).
 
@@ -71,7 +72,7 @@ Native unit tests cover the move algebra, notation parser, scrambles, persistenc
 | Solver | [kewb](https://crates.io/crates/kewb) (Kociemba two-phase) |
 | Build | [Trunk](https://trunkrs.dev/) → `wasm32-unknown-unknown`, then `tools/postbuild.py` |
 | Leaderboard | [Gleam](https://gleam.run/) on the BEAM, OTP `inets` httpd, append-only JSONL (`backend/`) |
-| Hosting | nginx (static files, `gzip_static`, `/api/` proxy) behind Cloudflare, atomic releases |
+| Hosting | nginx (static files, precompressed brotli + `gzip_static`, `/api/` proxy) behind Cloudflare, atomic releases |
 
 ## Development
 
