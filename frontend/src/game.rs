@@ -621,6 +621,17 @@ pub fn handle_commands(mut s: Session, mut settings: ResMut<Settings>, mut cam: 
                 PlayerOp::Close => s.close_player(),
             },
             UiCommand::ViewReset => cam.reset(),
+            UiCommand::Export => {
+                // Share links stay short: past a few hundred moves, don't bother.
+                let alg = if s.history.0.len() <= 400 { format_alg(&s.history.0, s.size.0) } else { String::new() };
+                let ev = Json::new()
+                    .str("type", "export")
+                    .str("alg", &alg)
+                    .num("n", s.size.0)
+                    .num("len", s.history.0.len())
+                    .done();
+                bridge::emit("event", &ev);
+            }
             UiCommand::Settings(text) => {
                 let mut next = settings.clone();
                 next.apply_str(&text);
@@ -760,8 +771,12 @@ pub fn apply_pending(mut s: Session, mut cubies: Query<(&mut GridPos, &mut Trans
     }
     if ready {
         s.game.phase = Phase::Ready;
-        bridge::emit("event", &Json::new().str("type", "ready").done());
+        emit_ready(&s.game);
     }
+}
+
+fn emit_ready(game: &Game) {
+    bridge::emit("event", &Json::new().str("type", "ready").str("mode", &game.mode.code()).done());
 }
 
 /// Runs the two-phase solve requested by SOLVE (3x3 only). Table generation
@@ -892,7 +907,7 @@ pub fn update_phase(mut s: Session, cubies: Query<(&GridPos, &Transform)>) {
     match s.game.phase {
         Phase::Scrambling => {
             s.game.phase = Phase::Ready;
-            bridge::emit("event", &Json::new().str("type", "ready").done());
+            emit_ready(&s.game);
         }
         Phase::Running if s.game.check_solved => {
             let scene: Vec<(IVec3, Quat)> = cubies.iter().map(|(gp, tf)| (gp.0, tf.rotation)).collect();

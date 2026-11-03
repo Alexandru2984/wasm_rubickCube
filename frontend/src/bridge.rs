@@ -56,6 +56,8 @@ pub enum UiCommand {
     Player(PlayerOp),
     ViewReset,
     Settings(String),
+    /// Ask for the current history as notation (for share links).
+    Export,
 }
 
 impl UiCommand {
@@ -106,6 +108,7 @@ impl UiCommand {
             }),
             "view_reset" => Self::ViewReset,
             "settings" => Self::Settings(arg.to_owned()),
+            "export" => Self::Export,
             _ => return None,
         })
     }
