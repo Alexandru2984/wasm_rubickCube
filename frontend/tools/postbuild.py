@@ -6,7 +6,11 @@
 2. Trunk's inline bootstrap <script type="module"> moves to a hashed external
    file, so the CSP needs no 'unsafe-inline'. While at it, the WASM size Trunk
    bakes in for the progress bar is corrected (Trunk records the size before
-   wasm-opt, so the bar used to stop at ~68%).
+   wasm-opt, so the bar used to stop at ~68%), and the engine only starts
+   when the WebGL gate didn't find WebGL2 missing.
+2b. The WebGL gate (assets/gate.mjs) gets the WASM URL and a hashed name and
+   runs as the page's first module script. It replaces Trunk's static WASM
+   preload: browsers without WebGL2 don't download an engine that can't run.
 3. Fails the build if any inline script, inline event handler or style
    attribute is left in index.html.
 4. Injects the precache list and cache version into service-worker.js.
@@ -105,11 +109,43 @@ def externalize_boot(dist: Path, html: str) -> str:
     body, n = re.subn(r"(__trunkInitializer\(init, '(/[^']+_bg\.wasm)', )(\d+)(,)", fix_size, body)
     if n != 1:
         fail("couldn't find the WASM size in the bootstrap script")
+    # Start the engine (and publish its bindings) unless the gate found no
+    # WebGL2. A gate that didn't run at all leaves no answer: start anyway.
+    start = "const wasm = await __trunkInitializer("
+    if body.count(start) != 1:
+        fail("couldn't find the engine start in the bootstrap script")
+    i = body.index(start)
+    body = body[:i] + "if (document.getElementById('bevy')?.dataset.webgl !== 'no') {\n" + body[i:].rstrip() + "\n}\n"
     data = body.strip().encode() + b"\n"
     name = f"boot-{hashlib.sha256(data).hexdigest()[:16]}.mjs"
     (dist / name).write_bytes(data)
     tag = f'<script type="module" src="/{name}" integrity="{sri(data)}" crossorigin="anonymous"></script>'
     return html[: m.start()] + tag + html[m.end() :]
+
+
+def add_gate(dist: Path, html: str, tag: str) -> str:
+    preloads = list(re.finditer(r'\s*<link rel="preload" href="(/[^"]+_bg\.wasm)"[^>]*>', html))
+    if len(preloads) != 1:
+        fail(f"expected exactly one WASM preload from Trunk, found {len(preloads)}")
+    m = preloads[0]
+    url = m.group(1)
+    html = html[: m.start()] + html[m.end() :]
+    src = dist / "gate.mjs"
+    if not src.is_file():
+        fail("dist/gate.mjs missing (is the copy-file link in index.html?)")
+    text = src.read_text()
+    if text.count("'__WASM_URL__'") != 1:
+        fail("gate.mjs placeholder missing")
+    data = text.replace("'__WASM_URL__'", json.dumps(url).replace('"', "'")).encode()
+    src.unlink()
+    name = f"gate-{hashlib.sha256(data).hexdigest()[:16]}.mjs"
+    (dist / name).write_bytes(data)
+    # Module scripts run in document order: before app.js, the gate runs first.
+    app = f'<script type="module" src="/{tag}/app.js"'
+    if html.count(app) != 1:
+        fail("couldn't find the app.js script tag")
+    gate = f'<script type="module" src="/{name}" integrity="{sri(data)}" crossorigin="anonymous"></script>\n    '
+    return html.replace(app, gate + app, 1)
 
 
 def check_csp_clean(html: str) -> None:
@@ -189,6 +225,7 @@ def main() -> None:
     # Chrome ignores (and warns about) SRI on as="fetch" preloads; the WASM
     # is fetched by the bootstrap, whose own integrity is pinned.
     html = re.sub(r'(<link rel="preload"[^>]*?) integrity="[^"]*"([^>]*as="fetch")', r"\1\2", html)
+    html = add_gate(dist, html, tag)
     html = externalize_boot(dist, html)
     check_csp_clean(html)
     index.write_text(html)

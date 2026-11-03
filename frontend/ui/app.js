@@ -1755,6 +1755,19 @@ function hideLoader() {
 }
 
 /**
+ * What to do about a refused WebGL2 context, from the browser's reason
+ * (Chrome's statusMessage; other browsers mostly give none).
+ */
+function webglHint(reason) {
+  // --disable-gpu, acceleration off in settings: "GL_VENDOR = Disabled";
+  // --disable-webgl or a policy: "disabled by enterprise policy or commandline switch".
+  if (/GL_VENDOR = Disabled|command ?line switch|policy/i.test(reason)) return t('noWebglOff');
+  // A page whose context took the GPU down is blocked until a restart.
+  if (/\bblocked\b/i.test(reason)) return t('noWebglBlocked');
+  return t('noWebglHint');
+}
+
+/**
  * Shows a failure on the loader; `detail` is a smaller line under it. A hard
  * failure (not `soft`) also stops the download progress in
  * assets/initializer.mjs from writing over it.
@@ -1798,26 +1811,14 @@ addEventListener('unhandledrejection', (e) => {
   if (!started) loaderError(t('loadFailed'));
 });
 
-// WebGL2 on the engine's own canvas, with the options the engine (wgpu) asks
-// for: when it calls getContext it gets this same context back, so this
-// answers exactly what the engine will see. If the browser refuses, the
-// engine panics a moment later; the loader keeps the reason instead, which
-// the browser gives in a webglcontextcreationerror event (Chrome: "blocked
-// after a GPU reset", "hardware acceleration disabled", …).
+// WebGL2: assets/gate.mjs asked for it on the engine's canvas before
+// anything else ran, and left the answer there. Without it the engine isn't
+// even downloaded; the loader says why, in the browser's own words too.
 {
   const canvas = $('#bevy');
-  let reason = '';
-  const onFail = (e) => { reason = String(e.statusMessage || ''); };
-  canvas.addEventListener('webglcontextcreationerror', onFail);
-  let gl = null;
-  try {
-    gl = canvas.getContext('webgl2', { antialias: false });
-  } catch {
-    gl = null;
-  }
-  canvas.removeEventListener('webglcontextcreationerror', onFail);
-  if (!gl) {
-    loaderError(t('noWebgl'), { detail: reason ? `${t('noWebglHint')} (${reason.slice(0, 200)})` : t('noWebglHint') });
+  if (canvas.dataset.webgl === 'no') {
+    const reason = canvas.dataset.webglReason || '';
+    loaderError(t('noWebgl'), { detail: reason ? `${webglHint(reason)} (${reason})` : webglHint(reason) });
     gpuError = reason;
     const track = $('.ldr-track');
     if (track) track.hidden = true;
