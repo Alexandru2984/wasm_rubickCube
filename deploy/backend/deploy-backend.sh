@@ -57,8 +57,14 @@ sudo chmod 0755 "$stage"
 
 sudo install -m 0644 "$repo/deploy/backend/cube-leaderboard.service" "/etc/systemd/system/$unit"
 sudo install -m 0755 "$repo/deploy/backend/cube-lb-moderate" /usr/local/sbin/cube-lb-moderate
+# Daily backup: local snapshot + encrypted copy on Google Drive.
+sudo install -m 0755 "$repo/deploy/backend/cube-lb-backup" /usr/local/sbin/cube-lb-backup
+sudo install -m 0644 "$repo/deploy/backend/cube-leaderboard-backup.service" /etc/systemd/system/
+sudo install -m 0644 "$repo/deploy/backend/cube-leaderboard-backup.timer" /etc/systemd/system/
+sudo install -d -o micu -g micu -m 0700 /srv/backups/cube-leaderboard
 sudo systemctl daemon-reload
 sudo systemctl enable --quiet "$unit"
+sudo systemctl enable --quiet --now cube-leaderboard-backup.timer
 
 if [ -d "$app" ]; then
     sudo rm -rf "$app.prev"

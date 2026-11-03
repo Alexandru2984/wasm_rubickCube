@@ -1,0 +1,52 @@
+# Installed to /etc/systemd/system/ by deploy/backend/deploy-backend.sh;
+# started daily by cube-leaderboard-backup.timer.
+[Unit]
+Description=Back up the cube.micutu.com leaderboard (local + encrypted Google Drive)
+Documentation=https://github.com/Alexandru2984/wasm_rubickCube/tree/main/backend
+Wants=network-online.target
+After=network-online.target cube-leaderboard.service
+# The host's shared Telegram alerting (as the other backups use it).
+OnFailure=swift-vapor-alert@%n.service
+OnSuccess=swift-vapor-resolved@%n.service
+
+[Service]
+Type=oneshot
+# The upload runs as the owner of the rclone config; the snapshot needs root
+# ("+" lifts User= and the sandbox) because the data dir belongs to cubelb.
+User=micu
+Group=micu
+UMask=0077
+ExecStartPre=+/usr/local/sbin/cube-lb-backup snapshot
+ExecStart=/usr/local/sbin/cube-lb-backup offsite
+TimeoutStartSec=15min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# rclone rewrites its config when it refreshes the Drive token.
+ReadWritePaths=/srv/backups/cube-leaderboard /home/micu/.config/rclone
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RemoveIPC=yes
+TasksMax=64
+MemoryMax=256M

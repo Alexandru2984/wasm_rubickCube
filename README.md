@@ -102,6 +102,13 @@ deploy/backend/deploy-backend.sh      # test + build the leaderboard, install, r
 sudo cube-lb-moderate list            # today's entries; `delete <id>` hides one
 ```
 
+**Leaderboard backup.** `cube-leaderboard-backup.timer` runs daily, just after the UTC day closes.
+1. It takes a validated snapshot of `entries.jsonl` into `/srv/backups/cube-leaderboard`, keeping 30 days locally.
+2. It copies the snapshots to Google Drive through an rclone crypt remote, encrypted on the server. The copy uses `copy --immutable`, so nothing remote is ever deleted.
+3. It downloads every file back and compares the bytes.
+
+Failures alert through the host's shared Telegram notifier. The restore steps are in the header of `deploy/backend/cube-lb-backup`.
+
 Releases live in `/srv/canary/cube.micutu.com/releases/<UTC stamp>-<commit>/`. The site root is a symlink, swapped with a single `rename(2)`, and the last five releases are kept.
 
 ## Project layout

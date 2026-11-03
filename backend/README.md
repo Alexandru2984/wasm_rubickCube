@@ -64,6 +64,9 @@ reply. Moderation appends a tombstone (`{"del":"<id>"}`), as `deploy/backend/cub
 does, and the next restart drops the entry. The file is replayed at startup, keeping the last 60
 days in memory.
 
+A daily timer backs the file up: a local snapshot, plus an encrypted copy on Google Drive that is
+read back and verified (`deploy/backend/cube-lb-backup`).
+
 ## Development
 
 ```sh

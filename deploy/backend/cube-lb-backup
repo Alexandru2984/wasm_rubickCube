@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Backs up the cube.micutu.com leaderboard: a local snapshot, then an
+# encrypted off-host copy on Google Drive (an rclone crypt remote).
+#
+#   cube-lb-backup snapshot   as root (the unit's ExecStartPre=+): consistent
+#                             copy of entries.jsonl into BACKUP_DIR
+#   cube-lb-backup offsite    as the owner of the rclone config (never root,
+#                             or a token refresh would take the file over):
+#                             upload with copy --immutable (nothing remote is
+#                             ever deleted or overwritten), then download
+#                             everything back and compare
+#
+# Installed to /usr/local/sbin by deploy/backend/deploy-backend.sh and run
+# daily by cube-leaderboard-backup.timer.
+#
+# Restore (service stopped):
+#   rclone copy gdrive-vps-crypt:cube-leaderboard/entries-<stamp>.jsonl.gz .
+#   gzip -cd entries-<stamp>.jsonl.gz | sudo tee /var/lib/cube-leaderboard/entries.jsonl >/dev/null
+#   sudo chown cubelb:cubelb /var/lib/cube-leaderboard/entries.jsonl
+#   sudo chmod 640 /var/lib/cube-leaderboard/entries.jsonl
+#   sudo systemctl start cube-leaderboard
+set -Eeuo pipefail
+umask 077
+
+DATA="${CUBE_LB_DATA_FILE:-/var/lib/cube-leaderboard/entries.jsonl}"
+BACKUP_DIR="${BACKUP_DIR:-/srv/backups/cube-leaderboard}"
+REMOTE="${CUBE_LB_REMOTE:-gdrive-vps-crypt:cube-leaderboard}"
+RCLONE_CONFIG_FILE="${RCLONE_CONFIG_FILE:-/home/micu/.config/rclone/rclone.conf}"
+OWNER="${BACKUP_OWNER:-micu}"
+KEEP_DAYS="${KEEP_DAYS:-30}"
+
+fail() {
+    echo "cube-lb-backup: $*" >&2
+    exit 1
+}
+
+[[ "$BACKUP_DIR" = /srv/backups/* && "$BACKUP_DIR" != *..* ]] || fail "BACKUP_DIR must be under /srv/backups"
+[[ "$REMOTE" =~ ^[A-Za-z0-9_-]+:([A-Za-z0-9_-]+/)*cube-leaderboard$ ]] || fail "CUBE_LB_REMOTE must be a dedicated remote:.../cube-leaderboard prefix"
+[[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] || fail "KEEP_DAYS must be a number"
+
+lock() {
+    exec 9>"$BACKUP_DIR/.lock"
+    flock -w 120 9 || fail "another backup run holds $BACKUP_DIR/.lock"
+}
+
+snapshot() {
+    [ "$(id -u)" = 0 ] || fail "snapshot runs as root (the data directory belongs to cubelb)"
+    [ -f "$DATA" ] || fail "no leaderboard data at $DATA"
+    install -d -o "$OWNER" -g "$OWNER" -m 0700 "$BACKUP_DIR"
+    lock
+
+    local stamp raw gz final latest count
+    stamp="$(date -u +%Y-%m-%dT%H%M%SZ)"
+    raw="$BACKUP_DIR/.entries-$stamp.jsonl.tmp"
+    gz="$BACKUP_DIR/.entries-$stamp.jsonl.gz.tmp"
+    final="$BACKUP_DIR/entries-$stamp.jsonl.gz"
+    trap 'rm -f "$raw" "$gz"' RETURN
+
+    # The service only ever appends whole lines, so a copy is consistent up
+    # to its last newline; cut off a line still being written, if any.
+    cp --no-preserve=all "$DATA" "$raw"
+    count="$(python3 -I - "$raw" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = f.read()
+data = data[: data.rfind(b"\n") + 1]
+with open(path, "wb") as f:
+    f.write(data)
+n = 0
+for line in data.splitlines():
+    if line.strip():
+        json.loads(line)  # a malformed line fails the backup loudly
+        n += 1
+print(n)
+PY
+)" || fail "snapshot of $DATA is not valid JSON lines"
+
+    gzip -n -9 -c "$raw" >"$gz"
+    gzip -t "$gz"
+    gzip -cd "$gz" | cmp -s - "$raw" || fail "compressed snapshot doesn't match"
+
+    # gzip -n is deterministic: same data, same archive. Unchanged since the
+    # last snapshot means nothing new to keep (offsite still re-verifies).
+    latest="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'entries-*.jsonl.gz' | sort | tail -n 1)"
+    if [ -n "$latest" ] && cmp -s "$gz" "$latest"; then
+        echo "unchanged since ${latest##*/} ($count lines)"
+    else
+        mv "$gz" "$final"
+        (cd "$BACKUP_DIR" && sha256sum "${final##*/}" >"${final##*/}.sha256")
+        chown "$OWNER:$OWNER" "$final" "$final.sha256"
+        chmod 600 "$final" "$final.sha256"
+        echo "snapshot ${final##*/}: $count lines, $(stat -c %s "$final") bytes"
+    fi
+    chown "$OWNER:$OWNER" "$BACKUP_DIR/.lock"
+
+    # Local retention; the newest snapshot always stays.
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name 'entries-*.jsonl.gz' -mtime +"$KEEP_DAYS" -print0 |
+        sort -z | head -z -n -1 |
+        while IFS= read -r -d '' old; do
+            rm -f -- "$old" "$old.sha256"
+            echo "pruned ${old##*/}"
+        done
+}
+
+# rclone retries transfers itself, but not a throttled request while it sets
+# the remote up (rclone's shared Google client is often rate limited). Retry
+# only throttling; auth or integrity errors fail at once.
+run_rclone() {
+    local attempt err status
+    err="$(mktemp)"
+    for attempt in 1 2 3 4 5; do
+        if rclone "$@" 2>"$err"; then
+            grep -v 'shared Google Drive client_id' "$err" >&2 || true
+            rm -f "$err"
+            return 0
+        else
+            status=$?
+        fi
+        grep -v 'shared Google Drive client_id' "$err" | grep -v '^\s*$' | tail -n 3 >&2 || true
+        if (( attempt == 5 )) || ! grep -Eq 'rateLimitExceeded|RATE_LIMIT_EXCEEDED|userRateLimitExceeded|Too Many Requests' "$err"; then
+            rm -f "$err"
+            return "$status"
+        fi
+        echo "Drive API throttled; retrying in $((30 * attempt))s (attempt $((attempt + 1))/5)" >&2
+        sleep $((30 * attempt))
+    done
+}
+
+offsite() {
+    [ "$(id -u)" != 0 ] || fail "offsite must not run as root (it would take over $RCLONE_CONFIG_FILE)"
+    [[ -f "$RCLONE_CONFIG_FILE" && ! -L "$RCLONE_CONFIG_FILE" ]] || fail "no rclone config at $RCLONE_CONFIG_FILE"
+    [ "$(stat -c %u "$RCLONE_CONFIG_FILE")" = "$(id -u)" ] || fail "$RCLONE_CONFIG_FILE belongs to someone else"
+    [ -d "$BACKUP_DIR" ] || fail "$BACKUP_DIR missing (run the snapshot first)"
+    lock
+
+    local manifest newest=0 n=0 name digest
+    manifest="$(mktemp)"
+    trap 'rm -f "$manifest"' RETURN
+    while IFS= read -r -d '' file; do
+        name="${file##*/}"
+        [[ "$name" =~ ^entries-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z\.jsonl\.gz$ ]] || continue
+        [ -f "$file.sha256" ] || fail "$name has no checksum file"
+        read -r digest _ <"$file.sha256"
+        [ "$(sha256sum "$file" | cut -d' ' -f1)" = "$digest" ] || fail "$name doesn't match its checksum"
+        printf '%s\n%s.sha256\n' "$name" "$name" >>"$manifest"
+        n=$((n + 1))
+        newest=$(( $(stat -c %Y "$file") > newest ? $(stat -c %Y "$file") : newest ))
+    done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'entries-*.jsonl.gz' -print0)
+    (( n > 0 )) || fail "no snapshots to upload"
+
+    local opts=(
+        --config "$RCLONE_CONFIG_FILE"
+        --contimeout 10s --timeout 60s --retries 3 --low-level-retries 3
+        --max-duration 8m --tpslimit 2 --tpslimit-burst 1 --bwlimit 4M
+    )
+    # copy, never sync: remote history is only ever added to.
+    run_rclone copy "$BACKUP_DIR" "$REMOTE" "${opts[@]}" --files-from "$manifest" --immutable
+    # Download every file back through the crypt layer and compare bytes.
+    run_rclone check "$BACKUP_DIR" "$REMOTE" "${opts[@]}" --files-from "$manifest" --one-way --download
+
+    printf '{"verified_at":"%s","remote":"%s","snapshots":%s,"newest_mtime":%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REMOTE" "$n" "$newest" >"$BACKUP_DIR/.offsite-status.json.tmp"
+    mv "$BACKUP_DIR/.offsite-status.json.tmp" "$BACKUP_DIR/offsite-status.json"
+    echo "offsite verified: $n snapshots in $REMOTE"
+}
+
+case "${1-}" in
+    snapshot) snapshot ;;
+    offsite) offsite ;;
+    *) fail "usage: cube-lb-backup snapshot|offsite" ;;
+esac

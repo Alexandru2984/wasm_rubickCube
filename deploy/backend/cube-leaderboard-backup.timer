@@ -1,0 +1,13 @@
+# Installed to /etc/systemd/system/ by deploy/backend/deploy-backend.sh.
+[Unit]
+Description=Daily cube.micutu.com leaderboard backup
+
+[Timer]
+# Just after the UTC day closes, so each snapshot holds a finished day.
+OnCalendar=*-*-* 00:20:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=cube-leaderboard-backup.service
+
+[Install]
+WantedBy=timers.target
