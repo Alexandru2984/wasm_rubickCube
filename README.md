@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Alexandru2984/wasm_rubickCube/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexandru2984/wasm_rubickCube/actions/workflows/ci.yml)
 
-A 3D Rubik's Cube you can play, time and learn in the browser. The cube is a Bevy scene compiled to WebAssembly. Around it is a hand-written HTML interface built for phones first. There's no backend and no account, and after the first visit it works offline.
+A 3D Rubik's Cube you can play, time and learn in the browser. The cube is a Bevy scene compiled to WebAssembly. Around it is a hand-written HTML interface built for phones first. There's no account, and after the first visit it works offline. The one server-side piece is a small Gleam service that ranks the daily challenge and verifies every solve before accepting it.
 
 **▶ Play: [cube.micutu.com](https://cube.micutu.com)**
 
@@ -21,6 +21,10 @@ A 3D Rubik's Cube you can play, time and learn in the browser. The cube is a Bev
 
 **Coming back every day**
 - **Daily challenge**: the same scramble for everyone each day, a countdown, the last 7 days and a streak.
+- **Global leaderboard** for the daily (today and yesterday).
+  - Opt-in with just a nickname.
+  - The server **replays your moves** on the day's scramble and ranks only solves that really solve the cube.
+  - Results recorded offline are published once you're back online.
 - **Algorithm trainer**: all 21 PLL and 57 OLL cases plus patterns, with a random AUF for recognition, per-case stats and "show me".
 - **Algorithm lab**: write any sequence, then run it, set it up, invert it or share it as a link.
 - **23 achievements**, a solved screen with your PB and ao5, confetti, sound and haptics.
@@ -32,13 +36,20 @@ A 3D Rubik's Cube you can play, time and learn in the browser. The cube is a Bev
 
 ## Security
 
-The site is static, but it's still treated as an attack surface:
+The site is static apart from the leaderboard API, and all of it is treated as an attack surface:
 
 - **Strict CSP**: `default-src 'none'`, with no `'unsafe-inline'` for scripts or styles. Only `'wasm-unsafe-eval'` is needed for WebAssembly. The build moves Trunk's inline bootstrap into a hashed file and **fails** if any inline script, event handler or `style=` attribute appears.
 - **Subresource Integrity** on every first-party script and stylesheet. UI files are served from content-hashed URLs.
 - The page never uses `innerHTML`. Every DOM node goes through a builder with an attribute allow-list. Everything read from storage, imports or the URL is validated and size-capped. CSV export defuses spreadsheet formulas.
 - The engine accepts only allow-listed commands through a bounded queue. The notation parser limits input length, move count, nesting and repetition.
-- nginx re-applies the security headers in every location. Responses carry HSTS, COOP/CORP, `X-Frame-Options: DENY` and a locked-down Permissions-Policy. Only GET and HEAD are allowed, real 404s replace the old SPA fallback, and dotfiles are denied.
+- nginx re-applies the security headers in every location. Responses carry HSTS, COOP/CORP, `X-Frame-Options: DENY` and a locked-down Permissions-Policy. Only GET and HEAD are allowed, except POST on `/api/daily/<day>`. Real 404s replace the old SPA fallback, and dotfiles are denied.
+- **Leaderboard API**: nothing about a time is trusted except what the server can check.
+  - **Replay**: the server regenerates the scramble bit for bit, replays the reported moves on a sticker model and counts the moves itself.
+  - **Bounds**: times must be at least 3 s and at most 15 turns per second.
+  - **Rate limits**: one entry per browser token per day, five per address per day, plus nginx limits.
+  - **Inputs**: strict JSON and name rules, a 16 KB body cap, and Origin plus Content-Type checks.
+  - **Privacy**: IPs are never written to disk; only the SHA-256 of the browser token is stored.
+  - **Service**: a sandboxed systemd unit with read-only code, loopback-only networking and a syscall filter.
 - Source paths are remapped at build time, so the binary doesn't reveal the build machine's layout. CI pins every third-party action to a commit SHA, verifies the Trunk download's checksum and runs a strict `cargo audit` weekly.
 
 ## Engineering notes
@@ -49,7 +60,7 @@ The site is static, but it's still treated as an attack surface:
 - **Framing.** The page reports how much of the screen its UI covers, and the camera frames the cube in the free band, easing over when the keypad or the player opens. Lights are attached to the camera, so every angle shows three clearly shaded faces.
 - **Size.** Trimmed Bevy features, full LTO, `opt-level = "z"` and `wasm-opt -Oz` produce 7.7 MB of WASM, about 2.5 MB gzipped, served precompressed through nginx `gzip_static`.
 
-Native unit tests cover the move algebra, notation parser, scrambles, persistence codec, bridge parsing, camera fit and solver round-trips (`cargo test`). Node tests cover statistics, averages, validation and CSV escaping (`node --test`).
+Native unit tests cover the move algebra, notation parser, scrambles, persistence codec, bridge parsing, camera fit and solver round-trips (`cargo test`). Node tests cover statistics, averages, validation, CSV escaping and the leaderboard client (`node --test`). The Gleam suite covers scramble vectors shared with the engine, replay, validation, the store and the HTTP API (`gleam test`).
 
 ## Tech stack
 
@@ -59,7 +70,8 @@ Native unit tests cover the move algebra, notation parser, scrambles, persistenc
 | Interface | Plain ES modules + CSS, no framework (`frontend/ui/`) |
 | Solver | [kewb](https://crates.io/crates/kewb) (Kociemba two-phase) |
 | Build | [Trunk](https://trunkrs.dev/) → `wasm32-unknown-unknown`, then `tools/postbuild.py` |
-| Hosting | nginx (static files, `gzip_static`) behind Cloudflare, atomic releases |
+| Leaderboard | [Gleam](https://gleam.run/) on the BEAM, OTP `inets` httpd, append-only JSONL (`backend/`) |
+| Hosting | nginx (static files, `gzip_static`, `/api/` proxy) behind Cloudflare, atomic releases |
 
 ## Development
 
@@ -72,14 +84,22 @@ trunk serve                      # dev server at http://127.0.0.1:8080
 cargo test                       # engine unit tests
 node --test tests/*.test.mjs     # page logic tests
 ./build.sh                       # release build into frontend/dist
+
+cd ../backend
+gleam test                       # leaderboard tests
+CUBE_LB_PORT=18737 CUBE_LB_DATA=/tmp/lb CUBE_LB_ORIGIN=http://127.0.0.1:8080 gleam run
 ```
+
+`trunk serve` doesn't proxy `/api/`, so the leaderboard shows "needs a connection" in dev unless the page is served through nginx (see `deploy/nginx/`).
 
 ## Deployment
 
 ```bash
-deploy/install-nginx.sh    # install the vhost + header snippet (backs up, tests, reloads)
-deploy/deploy.sh           # build, publish a new release, switch atomically
+deploy/install-nginx.sh               # vhost + headers + rate limits (backs up, tests, reloads)
+deploy/deploy.sh                      # build, publish a new release, switch atomically
 deploy/deploy.sh --rollback
+deploy/backend/deploy-backend.sh      # test + build the leaderboard, install, restart (auto-rollback)
+sudo cube-lb-moderate list            # today's entries; `delete <id>` hides one
 ```
 
 Releases live in `/srv/canary/cube.micutu.com/releases/<UTC stamp>-<commit>/`. The site root is a symlink, swapped with a single `rename(2)`, and the last five releases are kept.
@@ -98,9 +118,9 @@ frontend/
   src/trainer.rs     PLL/OLL/pattern library
   src/persist.rs     localStorage codec (with migration from v3)
   src/bridge.rs      page ⇄ engine commands and events
-  ui/                the interface (app.js, stats.js, i18n.js, fx.js, app.css)
+  ui/                the interface (app.js, stats.js, lb.js, i18n.js, fx.js, app.css)
   assets/            manifest, icons, service worker, loader, 404, OG image
   tools/postbuild.py CSP/SRI/hashing/precache/sitemap post-processing
-deploy/              nginx vhost + headers, install and deploy scripts
-backend/             Gleam placeholder, not deployed (a future home for leaderboards)
+backend/             daily leaderboard service (Gleam): replay-verified submissions
+deploy/              nginx vhost + headers + limits, deploy scripts, systemd unit
 ```

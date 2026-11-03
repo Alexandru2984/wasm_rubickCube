@@ -11,6 +11,7 @@
 
 import { t, setLang, getLang, achText } from './i18n.js';
 import * as St from './stats.js';
+import * as Lb from './lb.js';
 import { Sound, vibrate, confetti } from './fx.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -26,7 +27,7 @@ const NOTATION_RE = /^[RLUDFBMESxyzrludfbw0-9'’′ ()[\],.\n\t]*$/;
 const ATTRS = new Set([
   'id', 'type', 'role', 'title', 'for', 'name', 'value', 'min', 'max', 'step', 'placeholder', 'rows',
   'href', 'rel', 'target', 'tabindex', 'spellcheck', 'autocomplete', 'inputmode', 'accept', 'viewBox',
-  'preserveAspectRatio', 'points', 'd', 'autocapitalize', 'enterkeyhint',
+  'preserveAspectRatio', 'points', 'd', 'autocapitalize', 'enterkeyhint', 'maxlength',
 ]);
 
 /** Element factory. Text only via textContent; attributes from an allow-list. */
@@ -65,7 +66,7 @@ function icon(name) {
 
 const KEYS = {
   settings: 'cube.v4.settings', solves: 'cube.v4.solves', daily: 'cube.v4.daily',
-  ach: 'cube.v4.ach', trainer: 'cube.v4.trainer', seen: 'cube.v4.seen',
+  ach: 'cube.v4.ach', trainer: 'cube.v4.trainer', seen: 'cube.v4.seen', lb: 'cube.v4.lb',
 };
 
 const store = {
@@ -146,6 +147,12 @@ const daily = loadDaily();
 const unlocked = loadAch();
 const trainerStats = loadTrainer();
 migrateV3Bests();
+const lb = Lb.loadState(store.get(KEYS.lb), St.utcDay());
+if (lb.fresh) saveLb();
+
+function saveLb() {
+  store.set(KEYS.lb, Lb.toJSON(lb));
+}
 
 function loadDaily() {
   const m = new Map();
@@ -368,7 +375,7 @@ function onSolved(ev) {
   store.set(KEYS.solves, solves);
 
   let firstDaily = false;
-  if (dailyDay !== null && dailyDay === St.utcDay() && !daily.has(dailyDay)) {
+  if (dailyDay !== null && Lb.isOpen(dailyDay, St.utcDay()) && !daily.has(dailyDay)) {
     daily.set(dailyDay, { t: solve.t, m: solve.m, p: solve.p });
     saveDaily();
     firstDaily = true;
@@ -381,6 +388,13 @@ function onSolved(ev) {
   }
 
   const effTime = St.eff(solve);
+  // The first attempt at a daily goes to the global leaderboard, with the
+  // moves as proof (the server replays them). DNFs and oversized logs don't.
+  if (firstDaily && n === 3 && Number.isFinite(effTime) && typeof ev.sol === 'string' && ev.sol && ev.sol.length <= 16_000) {
+    lb.pending = { day: dailyDay, ms: Math.round(effTime), sol: ev.sol };
+    lbNote = null;
+    saveLb();
+  }
   setTimerText(St.fmt(effTime), 'done');
   updateTimerSub();
 
@@ -417,6 +431,8 @@ function showSolvedModal(info) {
     const st = St.streak([...daily.keys()]);
     if (st > 1) badges.append(h('span', { class: 'badge gold', text: `🔥 ${t('streakDays', { n: st })}` }));
   }
+  renderSolvedLb();
+  if (dailyDay !== null && lb.pending && lb.pending.day === dailyDay && lb.name) publishNow();
   const modal = $('#solvedModal');
   if (!modal.open) modal.showModal();
   sound.fanfare();
@@ -440,9 +456,10 @@ function shareDaily(day) {
   const r = daily.get(day);
   if (!r) return;
   const st = St.streak([...daily.keys()]);
+  const entry = lb.entries.get(day);
   const text = t('shareDaily', {
     n: St.dailyNumber(day), t: St.fmt(St.eff(r)), m: r.m,
-    streak: st > 1 ? t('shareStreak', { n: st }) : '',
+    streak: (st > 1 ? t('shareStreak', { n: st }) : '') + (entry ? t('shareRank', { rank: entry.rank, total: entry.total }) : ''),
   });
   shareText(text, `${location.origin}/#daily`);
 }
@@ -956,7 +973,7 @@ function buildDaily() {
     st > 0 ? h('div', { class: 'streak' }, icon('flame'), t('streakDays', { n: st })) : null,
   );
   const actions = res
-    ? h('div', { class: 'row wrap' },
+    ? h('div', { class: 'row wrap daily-actions' },
       h('button', { class: 'btn primary grow', type: 'button', on: { click: () => shareDaily(today) } }, icon('share'), t('dailyShare')),
       h('button', { class: 'btn grow', type: 'button', on: { click: start } }, icon('dice'), t('dailyPractice')))
     : h('button', { class: 'btn primary block', type: 'button', on: { click: start } }, icon('play'), t('dailyStart'));
@@ -967,7 +984,183 @@ function buildDaily() {
     week.append(h('div', { class: `day${daily.has(d) ? ' ok' : ''}${d === today ? ' today' : ''}`, title: daily.has(d) ? St.fmt(St.eff(daily.get(d))) : '' },
       h('i'), fmtDay.format(new Date(d * 86_400_000))));
   }
-  return [sec(null, hero), sec(null, actions, h('div', { class: 'sec' }, countdown)), sec(t('dailyHistory'), week)];
+  return [sec(null, hero), sec(null, actions, h('div', { class: 'sec' }, countdown)), buildLeaderboard(today), sec(t('dailyHistory'), week)];
+}
+
+// Global leaderboard -----------------------------------------------------------
+
+const lbBoards = new Map(); // day → { at, board } (board null = unavailable)
+const lbLoading = new Map(); // day → in-flight fetch
+let lbTab = 0; // 0 = today, 1 = yesterday
+let lbBusy = false; // a submission is in flight
+let lbNote = null; // { day, msg }: outcome of the last attempt, for the UI
+let lbEditing = false;
+
+function loadBoard(day) {
+  const hit = lbBoards.get(day);
+  if (hit && Date.now() - hit.at < (hit.board ? 30_000 : 5_000)) return Promise.resolve(hit.board);
+  if (!lbLoading.has(day)) {
+    const mine = lb.entries.get(day);
+    lbLoading.set(day, Lb.fetchBoard(day, mine && mine.id).then((board) => {
+      lbLoading.delete(day);
+      lbBoards.set(day, { at: Date.now(), board });
+      return board;
+    }));
+  }
+  return lbLoading.get(day);
+}
+
+/** Publishes the pending solve (if there's one and a name). */
+async function publishPending() {
+  const p = lb.pending;
+  if (!p || !lb.name || lbBusy) return null;
+  if (!Lb.isOpen(p.day, St.utcDay())) {
+    lb.pending = null;
+    saveLb();
+    return null;
+  }
+  lbBusy = true;
+  const res = await Lb.submit(p.day, { name: lb.name, token: lb.token, ms: p.ms, sol: p.sol });
+  lbBusy = false;
+  if (res.ok) {
+    lb.entries.set(p.day, res.entry);
+    lb.pending = null;
+    lbNote = null;
+    saveLb();
+    lbBoards.delete(p.day);
+    track('lb_publish');
+    return { ok: true, day: p.day, entry: res.entry };
+  }
+  const f = Lb.failureAction(res);
+  if (f.action === 'drop') lb.pending = null;
+  if (f.action === 'name') lb.name = null;
+  lbNote = { day: p.day, msg: f.msg };
+  saveLb();
+  return { ok: false, day: p.day, ...f };
+}
+
+/** Publishes now and refreshes whatever shows the result. */
+function publishNow() {
+  const run = publishPending();
+  renderLbViews();
+  run.then(renderLbViews);
+  return run;
+}
+
+/** Background retry (startup, back online): only a toast to report. */
+function retryPending() {
+  if (!lb.pending || !lb.name) return;
+  publishPending().then((r) => {
+    if (r && r.ok) toast(t('lbPublished', { rank: r.entry.rank, total: r.entry.total }), { em: '🏆', action: { label: t('lbSee'), fn: () => openPanel('daily') } });
+    renderLbViews();
+  });
+}
+
+function renderLbViews() {
+  renderSolvedLb();
+  if (currentPanel === 'daily') renderPanel('daily', true);
+}
+
+function lbNameForm() {
+  const input = h('input', {
+    type: 'text', class: 'lb-input', placeholder: t('lbNamePh'), 'aria-label': t('lbNamePh'), maxlength: '16',
+    autocomplete: 'nickname', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'send', value: lb.name || '',
+  });
+  const err = h('div', { class: 'err', 'aria-live': 'polite', text: lbNote && lbNote.msg === 'lbBadName' ? t('lbBadName') : '' });
+  const go = () => {
+    const name = Lb.cleanName(input.value);
+    if (!name) {
+      err.textContent = t('lbNameHint');
+      input.focus();
+      return;
+    }
+    lb.name = name;
+    lbEditing = false;
+    lbNote = null;
+    saveLb();
+    if (lb.pending) publishNow();
+    else renderLbViews();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      go();
+    }
+  });
+  return h('div', { class: 'lb-form' },
+    h('div', { class: 'row' }, input, h('button', { class: 'btn primary', type: 'button', on: { click: go } }, t(lb.pending ? 'lbPublish' : 'lbSave'))),
+    err,
+    h('p', { class: 'lb-fine', text: t('lbFine') }));
+}
+
+/** What the leaderboard knows about `day` for this browser, as UI. */
+function lbStatus(day) {
+  const entry = lb.entries.get(day);
+  if (entry) return h('div', { class: 'lb-result' }, h('span', { class: 'lb-trophy', 'aria-hidden': 'true', text: entry.rank <= 3 ? ['🥇', '🥈', '🥉'][entry.rank - 1] : '🏆' }), t('lbRank', { rank: entry.rank, total: entry.total }));
+  if (lb.pending && lb.pending.day === day) {
+    if (!lb.name) return h('div', { class: 'lb-join' }, h('b', { text: t('lbJoin') }), lbNameForm());
+    if (lbBusy) return h('div', { class: 'lb-result muted' }, t('lbPublishing'));
+  }
+  if (lbNote && lbNote.day === day) return h('div', { class: 'lb-result muted' }, t(lbNote.msg));
+  return null;
+}
+
+function renderSolvedLb() {
+  const box = $('#solvedLb');
+  const day = lastSolved ? lastSolved.dailyDay : null;
+  const status = day !== null ? lbStatus(day) : null;
+  box.replaceChildren(...(status ? [status] : []));
+  if (status && lb.entries.has(day)) {
+    box.append(h('button', { class: 'link-btn', type: 'button', text: t('lbSee'), on: { click: () => { $('#solvedModal').close(); lbTab = St.utcDay() - day; openPanel('daily'); } } }));
+  }
+  box.hidden = !status;
+}
+
+function buildLeaderboard(today) {
+  if (lbTab !== 0 && lbTab !== 1) lbTab = 0;
+  const day = today - lbTab;
+  const tabs = h('div', { class: 'tabs', role: 'tablist' },
+    ...[[0, t('lbToday')], [1, t('lbYesterday')]].map(([i, label]) =>
+      h('button', { class: 'tab', type: 'button', role: 'tab', 'aria-selected': String(lbTab === i), text: label, on: { click: () => { lbTab = i; renderPanel('daily', true); } } })));
+  const body = h('div', { class: 'lb-body', 'aria-busy': 'true' }, h('div', { class: 'lb-skel' }, h('i'), h('i'), h('i')));
+  const paint = (board) => {
+    body.replaceChildren(...lbBoardView(board, day));
+    body.setAttribute('aria-busy', 'false');
+  };
+  const hit = lbBoards.get(day);
+  if (hit && Date.now() - hit.at < 30_000) paint(hit.board);
+  else loadBoard(day).then((board) => { if (body.isConnected) paint(board); });
+
+  const status = lbStatus(day);
+  let footer = null;
+  if (lb.name) {
+    footer = lbEditing
+      ? lbNameForm()
+      : h('div', { class: 'row between lb-me' },
+        h('span', { class: 'muted small', text: t('lbAs', { name: lb.name }) }),
+        h('span', { class: 'row' },
+          h('button', { class: 'link-btn', type: 'button', text: t('lbChange'), on: { click: () => { lbEditing = true; renderPanel('daily', true); } } }),
+          h('button', { class: 'link-btn', type: 'button', text: t('lbStop'), on: { click: () => { lb.name = null; saveLb(); renderPanel('daily', true); toast(t('lbStopped')); } } })));
+  }
+  return sec(t('lbTitle'), tabs, status ? h('div', { class: 'card lb-card' }, status) : null, body, footer);
+}
+
+function lbBoardView(board, day) {
+  if (!board) {
+    return [h('div', { class: 'lb-empty' },
+      h('p', { class: 'muted small', text: t('lbOffline') }),
+      h('button', { class: 'btn', type: 'button', on: { click: () => { lbBoards.delete(day); renderPanel('daily', true); } } }, icon('reset'), t('lbRetry')))];
+  }
+  if (!board.top.length) return [h('p', { class: 'lb-empty muted small', text: t(day === board.today ? 'lbEmpty' : 'lbEmptyPast') })];
+  const meRank = board.me ? board.me.rank : 0;
+  const row = (r) => h('li', { class: `lb-row${r.rank === meRank ? ' me' : ''}${r.rank <= 3 ? ` r${r.rank}` : ''}` },
+    h('span', { class: 'lb-rank', text: String(r.rank) }),
+    h('span', { class: 'lb-name', text: r.name, title: r.name }),
+    h('span', { class: 'lb-moves', text: t('lbMv', { n: r.moves }) }),
+    h('span', { class: 'lb-time', text: St.fmt(r.ms) }));
+  const list = h('ol', { class: 'lb-list', 'aria-label': t('lbTitle') }, ...board.top.map(row));
+  if (board.me && board.me.rank > board.top.length) list.append(h('li', { class: 'lb-gap', 'aria-hidden': 'true', text: '⋯' }), row(board.me));
+  return [list, h('p', { class: 'muted small lb-total', text: t('lbPlayers', { n: board.total }) })];
 }
 
 // Trainer --------------------------------------------------------------------
@@ -1440,6 +1633,7 @@ function onEngineReady() {
   checkAchievements();
   const today = St.utcDay();
   $('#dailyDot').hidden = daily.has(today);
+  retryPending();
   if (!store.raw(KEYS.seen)) {
     store.set(KEYS.seen, 1);
     setTimeout(() => toast(t('welcome'), { em: '👋', sub: t('welcomeSub'), ms: 7000, action: { label: t('tryDaily'), fn: () => openPanel('daily') } }), 900);
@@ -1552,6 +1746,7 @@ $('#solvedAgain').addEventListener('click', () => {
   else doScramble();
 });
 $('#solvedShare').addEventListener('click', shareSolved);
+addEventListener('online', retryPending);
 $('#solvedModal').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
 applyStaticI18n();

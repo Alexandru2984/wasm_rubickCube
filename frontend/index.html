@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Rubik's Cube 3D — play, time and learn online</title>
-    <meta name="description" content="Free 3D Rubik's Cube in your browser: 2×2 up to 20×20, speedcubing timer with WCA inspection, daily challenge, step-by-step solver and an OLL/PLL trainer. Works offline." />
+    <meta name="description" content="Free 3D Rubik's Cube in your browser: 2×2 up to 20×20, speedcubing timer with WCA inspection, a daily challenge with a global leaderboard, step-by-step solver and an OLL/PLL trainer. Works offline." />
     <link rel="canonical" href="https://cube.micutu.com/" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <meta name="theme-color" content="#0f1020" />
@@ -20,7 +20,7 @@
     <meta property="og:site_name" content="micutu.com" />
     <meta property="og:url" content="https://cube.micutu.com/" />
     <meta property="og:title" content="Rubik's Cube 3D — play, time and learn online" />
-    <meta property="og:description" content="Turn a real-feeling 3D cube from 2×2 to 20×20, race the timer, take the daily challenge and learn every OLL and PLL. Free, no sign-up, works offline." />
+    <meta property="og:description" content="Turn a real-feeling 3D cube from 2×2 to 20×20, race the timer, climb the daily leaderboard and learn every OLL and PLL. Free, no sign-up, works offline." />
     <meta property="og:image" content="https://cube.micutu.com/og.jpg" />
     <meta property="og:image:type" content="image/jpeg" />
     <meta property="og:image:width" content="1200" />
@@ -47,7 +47,7 @@
         "featureList": [
           "Cubes from 2×2 to 20×20",
           "Speedcubing timer with WCA inspection, ao5 and ao12",
-          "Daily challenge with streaks",
+          "Daily challenge with streaks and a global leaderboard",
           "Step-by-step solver",
           "OLL and PLL algorithm trainer",
           "Achievements and statistics",
@@ -208,6 +208,7 @@
           <div class="solved-time" id="solvedTime">0.00</div>
           <div class="solved-meta" id="solvedMeta"></div>
           <div class="solved-badges" id="solvedBadges"></div>
+          <div class="solved-lb" id="solvedLb" aria-live="polite" hidden></div>
           <div class="solved-actions">
             <button class="btn" type="button" id="solvedShare"><svg class="ic"><use href="#i-share"/></svg><span data-i18n="share">Share</span></button>
             <button class="btn primary" type="button" id="solvedAgain"><svg class="ic"><use href="#i-dice"/></svg><span data-i18n="again">Again</span></button>
@@ -242,7 +243,7 @@
         <ul>
           <li>Cubes from 2×2 up to 20×20, turned by dragging the stickers</li>
           <li>Speedcubing timer with WCA inspection, ao5, ao12 and personal bests</li>
-          <li>A daily challenge: the same scramble for everyone, every day</li>
+          <li>A daily challenge: the same scramble for everyone, with a global leaderboard</li>
           <li>A solver that plays its solution move by move</li>
           <li>A trainer for all 21 PLL and 57 OLL cases</li>
         </ul>
