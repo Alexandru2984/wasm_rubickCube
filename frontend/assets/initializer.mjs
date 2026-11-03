@@ -1,9 +1,10 @@
-// Trunk initializer: reports WASM download progress on the loading screen and
-// hides it once the engine runs.
+// Trunk initializer: reports WASM download progress on the loading screen.
 //
-// winit leaves its init loop by throwing a sentinel ("Using exceptions for
-// control flow"); that is NOT a load failure — the app is already running —
-// so it's treated as success, otherwise the loader would cover the cube.
+// The loader is NOT hidden here: init() returns (or winit throws its "Using
+// exceptions for control flow" sentinel, which is not a failure) before the
+// renderer exists — wgpu is set up afterwards, asynchronously, and can still
+// fail. ui/app.js hides the loader when the engine reports it is ready, or
+// shows what went wrong.
 //
 // The page language is set by ui/app.js before this runs; strings here stay
 // self-contained because this file isn't part of the hashed ui/ bundle.
@@ -17,16 +18,11 @@ export default function initializer() {
   const bar = () => document.getElementById('ldr-bar');
   const label = () => document.getElementById('ldr-label');
   const loader = () => document.getElementById('loader');
-
-  let removed = false;
-  const removeLoader = () => {
-    if (removed) return;
-    removed = true;
-    const el = loader();
-    if (el) {
-      el.classList.add('done');
-      setTimeout(() => el.remove(), 500);
-    }
+  // Progress text, unless ui/app.js already reported a failure there (e.g.
+  // no WebGL2), which must stay readable.
+  const say = (text) => {
+    const l = label();
+    if (l && !loader()?.hasAttribute('data-failed')) l.textContent = text;
   };
 
   const isControlFlow = (e) => {
@@ -42,30 +38,21 @@ export default function initializer() {
   };
 
   return {
-    onStart: () => {
-      const l = label();
-      if (l) l.textContent = s.dl;
-    },
+    onStart: () => say(s.dl),
     onProgress: ({ current, total }) => {
       if (!total) return;
       const pct = Math.min(100, Math.round((current / total) * 100));
       progress(pct);
-      const l = label();
-      if (l) l.textContent = `${s.dl} ${pct}%`;
+      say(`${s.dl} ${pct}%`);
     },
     onComplete: () => {
       progress(100);
-      const l = label();
-      if (l) l.textContent = s.start;
+      say(s.start);
     },
-    onSuccess: () => removeLoader(),
+    onSuccess: () => {},
     onFailure: (error) => {
-      if (isControlFlow(error)) {
-        removeLoader();
-        return;
-      }
-      const l = label();
-      if (l) l.textContent = s.fail;
+      if (isControlFlow(error)) return;
+      say(s.fail);
       const acts = document.getElementById('ldr-actions');
       if (acts) acts.hidden = false;
       console.error('WASM load failed:', error);

@@ -4,7 +4,9 @@
 export const STRINGS = {
   en: {
     loading: 'Loading…', downloading: 'Downloading the cube… {pct}%', starting: 'Starting the 3D engine…',
-    loadFailed: 'Loading failed. Please reload the page.', noWebgl: 'Your browser doesn’t support WebGL2, which the cube needs.',
+    loadFailed: 'Loading failed. Please reload the page.', noWebgl: 'The 3D engine can’t start: the browser won’t give this page WebGL2.',
+    noWebglHint: 'Check that hardware acceleration is on in the browser settings, then quit and reopen the browser completely: after a graphics driver crash Chrome blocks 3D on a site until it restarts. Extensions that block canvas or WebGL do this too (try a private window).',
+    gpuLost: 'The graphics card stopped responding.', gpuLostSub: 'Reload the page to bring the cube back.',
     slowLoad: 'This is taking a while. If it stays stuck, try:', unexpected: 'Something went wrong.', reload: 'Reload', clearCache: 'Clear cache',
     size: 'Cube size', smaller: 'Smaller cube', bigger: 'Bigger cube', menu: 'Menu', close: 'Close', controls: 'Cube controls',
     undo: 'Undo', redo: 'Redo', scramble: 'Scramble', solve: 'Solve', hint: 'Hint', rewind: 'Rewind', moves: 'Moves', more: 'More',
@@ -85,7 +87,9 @@ export const STRINGS = {
   },
   ro: {
     loading: 'Se încarcă…', downloading: 'Se descarcă cubul… {pct}%', starting: 'Pornește motorul 3D…',
-    loadFailed: 'Încărcarea a eșuat. Reîncarcă pagina.', noWebgl: 'Browserul tău nu suportă WebGL2, necesar pentru cub.',
+    loadFailed: 'Încărcarea a eșuat. Reîncarcă pagina.', noWebgl: 'Motorul 3D nu poate porni: browserul nu îi dă paginii WebGL2.',
+    noWebglHint: 'Verifică dacă accelerarea hardware e pornită în setările browserului, apoi închide complet browserul și redeschide-l: după o eroare a driverului grafic, Chrome blochează 3D pe site până la repornire. La fel fac și extensiile care blochează canvas sau WebGL (încearcă o fereastră privată).',
+    gpuLost: 'Placa grafică nu mai răspunde.', gpuLostSub: 'Reîncarcă pagina ca să revină cubul.',
     slowLoad: 'Se încarcă anevoios. Dacă rămâne blocat, încearcă:', unexpected: 'A apărut o eroare neașteptată.', reload: 'Reîncarcă', clearCache: 'Golește cache',
     size: 'Mărimea cubului', smaller: 'Cub mai mic', bigger: 'Cub mai mare', menu: 'Meniu', close: 'Închide', controls: 'Comenzi cub',
     undo: 'Înapoi', redo: 'Refă', scramble: 'Amestecă', solve: 'Rezolvă', hint: 'Indiciu', rewind: 'Derulează', moves: 'Mutări', more: 'Mai mult',

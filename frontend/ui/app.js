@@ -602,6 +602,8 @@ function toast(text, { em, sub, action, ms = 2800 } = {}) {
 // ── Engine events ───────────────────────────────────────────────────────────
 
 let started = false;
+/** Set (to the browser's reason, maybe empty) when WebGL2 is refused. */
+let gpuError = null;
 
 addEventListener('cube:catalog', (e) => {
   const d = parseDetail(e);
@@ -1752,11 +1754,20 @@ function hideLoader() {
   setTimeout(() => loader.remove(), 500);
 }
 
-function loaderError(msg, withActions = true) {
+/**
+ * Shows a failure on the loader; `detail` is a smaller line under it. A hard
+ * failure (not `soft`) also stops the download progress in
+ * assets/initializer.mjs from writing over it.
+ */
+function loaderError(msg, { actions = true, detail = '', soft = false } = {}) {
+  if (gpuError !== null) return; // keeps the reason, not the panic that follows
+  if (!soft) $('#loader')?.setAttribute('data-failed', '');
   const label = $('#ldr-label');
   if (label) label.textContent = msg;
+  $('#ldr-detail')?.remove();
+  if (detail && label) label.after(h('p', { id: 'ldr-detail', text: detail }));
   const acts = $('#ldr-actions');
-  if (acts && withActions) acts.hidden = false;
+  if (acts && actions) acts.hidden = false;
 }
 
 async function hardReload() {
@@ -1787,14 +1798,41 @@ addEventListener('unhandledrejection', (e) => {
   if (!started) loaderError(t('loadFailed'));
 });
 
-if (!document.createElement('canvas').getContext('webgl2')) {
-  loaderError(t('noWebgl'), false);
-  const track = $('.ldr-track');
-  if (track) track.hidden = true;
+// WebGL2 on the engine's own canvas, with the options the engine (wgpu) asks
+// for: when it calls getContext it gets this same context back, so this
+// answers exactly what the engine will see. If the browser refuses, the
+// engine panics a moment later; the loader keeps the reason instead, which
+// the browser gives in a webglcontextcreationerror event (Chrome: "blocked
+// after a GPU reset", "hardware acceleration disabled", …).
+{
+  const canvas = $('#bevy');
+  let reason = '';
+  const onFail = (e) => { reason = String(e.statusMessage || ''); };
+  canvas.addEventListener('webglcontextcreationerror', onFail);
+  let gl = null;
+  try {
+    gl = canvas.getContext('webgl2', { antialias: false });
+  } catch {
+    gl = null;
+  }
+  canvas.removeEventListener('webglcontextcreationerror', onFail);
+  if (!gl) {
+    loaderError(t('noWebgl'), { detail: reason ? `${t('noWebglHint')} (${reason.slice(0, 200)})` : t('noWebglHint') });
+    gpuError = reason;
+    const track = $('.ldr-track');
+    if (track) track.hidden = true;
+  } else {
+    // The engine can't rebuild its GPU resources: a lost context (driver
+    // reset, GPU process crash) needs a reload rather than a frozen cube.
+    canvas.addEventListener('webglcontextlost', () => {
+      if (!started) loaderError(t('gpuLost'), { detail: t('gpuLostSub') });
+      else toast(t('gpuLost'), { em: '⚠️', sub: t('gpuLostSub'), ms: 0, action: { label: t('reload'), fn: () => location.reload() } });
+    });
+  }
 }
 
 setTimeout(() => {
-  if (!started) loaderError(t('slowLoad'));
+  if (!started) loaderError(t('slowLoad'), { soft: true });
 }, 30000);
 
 // Service worker + update prompt.
@@ -1859,4 +1897,4 @@ $('#solvedModal').addEventListener('click', (e) => { if (e.target === e.currentT
 
 applyStaticI18n();
 renderAll();
-$('#ldr-label').textContent = t('loading');
+if (!$('#loader')?.hasAttribute('data-failed')) $('#ldr-label').textContent = t('loading');

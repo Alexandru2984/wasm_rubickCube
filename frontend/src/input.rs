@@ -121,10 +121,18 @@ pub fn camera_zoom(mut state: ResMut<OrbitCamera>, mut scroll: EventReader<Mouse
 
 // ── Canvas resolution ─────────────────────────────────────────────────────────
 
-/// winit-web sets the physical resolution to the canvas's CSS size (without
-/// devicePixelRatio), so high-DPI screens render blurry and pointer positions
-/// drift. Physical = CSS × dpr (capped by settings: a 3× phone doesn't need
-/// 9× the pixels of a 1× screen), scale_factor = dpr.
+/// Render resolution: physical = CSS size × dpr, where dpr is the screen's
+/// devicePixelRatio capped by settings (a 3× phone doesn't need 9× the pixels
+/// of a 1× screen, and the battery saver renders at 1.25×).
+///
+/// The cap is a Bevy scale-factor override, and two things in the browser
+/// don't know about it:
+/// - bevy_winit pushes every resolution change to winit, which writes the
+///   canvas's inline CSS size as physical / *real* dpr. With a cap below the
+///   real dpr that shrinks the canvas, feeding back each frame until it is a
+///   speck in the corner. app.css pins `#bevy` with `!important`, which wins
+///   over inline styles.
+/// - pointer positions arrive scaled by the real dpr; see [`pointer_scale`].
 #[cfg(target_arch = "wasm32")]
 pub fn sync_canvas_resolution(
     settings: Res<Settings>,
@@ -187,6 +195,22 @@ pub struct ManualRotation {
     angle: f32,
 }
 
+/// Factor that turns Bevy's cursor and touch positions into logical pixels.
+///
+/// The browser reports positions in physical pixels at the real
+/// devicePixelRatio, but Bevy divides them by the window's scale factor,
+/// which [`sync_canvas_resolution`] may cap lower: on a 3× phone capped at 2×
+/// every position would be 1.5× too far from the corner, so taps miss the
+/// cube and land on empty space. 1 wherever there is no cap.
+pub fn pointer_scale(window: &Window) -> f32 {
+    let base = window.resolution.base_scale_factor();
+    if base > 0.0 {
+        window.resolution.scale_factor() / base
+    } else {
+        1.0
+    }
+}
+
 type CubieQuery<'w, 's> = Query<'w, 's, (Entity, &'static GridPos, &'static mut Transform)>;
 
 #[allow(clippy::too_many_arguments)]
@@ -203,8 +227,11 @@ pub fn pointer_input(
     let Ok((camera, cam_transform)) = camera_q.get_single() else { return };
     let Ok(window) = windows.get_single() else { return };
 
+    let k = pointer_scale(window);
+    let cursor = || window.cursor_position().map(|p| p * k);
+
     // 2+ fingers → pinch zoom; an ongoing manual rotation snaps and ends.
-    let touch_positions: Vec<Vec2> = touches.iter().map(|t| t.position()).collect();
+    let touch_positions: Vec<Vec2> = touches.iter().map(|t| t.position() * k).collect();
     if touch_positions.len() >= 2 {
         finish_manual(&mut s);
         let d = touch_positions[0].distance(touch_positions[1]);
@@ -228,16 +255,16 @@ pub fn pointer_input(
         }
     }
 
-    let touch_delta: Vec2 = touches.iter().next().map(|t| t.delta()).unwrap_or(Vec2::ZERO);
-    let touch_just_pressed = touches.iter_just_pressed().next().map(|t| t.position());
+    let touch_delta: Vec2 = touches.iter().next().map(|t| t.delta() * k).unwrap_or(Vec2::ZERO);
+    let touch_just_pressed = touches.iter_just_pressed().next().map(|t| t.position() * k);
     let touch_ended = touches.iter_just_released().next().is_some() || touches.iter_just_canceled().next().is_some();
 
     let mouse_down = mouse_button.pressed(MouseButton::Left);
-    let mouse_just_pressed = mouse_button.just_pressed(MouseButton::Left).then(|| window.cursor_position()).flatten();
+    let mouse_just_pressed = mouse_button.just_pressed(MouseButton::Left).then(cursor).flatten();
     let mouse_just_released = mouse_button.just_released(MouseButton::Left);
 
     let pressed_now = touch_just_pressed.or(mouse_just_pressed);
-    let pos_now: Option<Vec2> = touch_pos.or_else(|| if mouse_down { window.cursor_position() } else { None });
+    let pos_now: Option<Vec2> = touch_pos.or_else(|| if mouse_down { cursor() } else { None });
     let delta_now: Vec2 = if touch_pos.is_some() {
         touch_delta
     } else if mouse_down {

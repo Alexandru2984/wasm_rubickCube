@@ -85,9 +85,13 @@ a { color: var(--accent); }
 
 /* ── Canvas ─────────────────────────────────────────────────────────────── */
 
+/* The engine (winit) writes an inline px size on the canvas, computed from the
+   real devicePixelRatio; with the engine's resolution cap below that (3× phones,
+   battery saver) it is too small and shrinks the cube into a corner. The
+   canvas always fills the screen, so !important overrides the inline size. */
 #bevy {
   position: fixed; inset: 0;
-  display: block; width: 100%; height: 100%;
+  display: block; width: 100% !important; height: 100% !important;
   touch-action: none; outline: none;
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
@@ -577,6 +581,7 @@ textarea:focus, input[type="text"]:focus { border-color: rgba(255, 214, 10, 0.6)
 .ldr-track { width: min(260px, 60vw); height: 6px; border-radius: 3px; background: #26283e; overflow: hidden; }
 #ldr-bar { width: 0%; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #0045ad, #008c38, #ffd600, #ff5900, #b81205); transition: width 0.2s ease; }
 #ldr-actions { display: flex; gap: 10px; }
+#ldr-detail { color: var(--muted); font-size: 12.5px; line-height: 1.5; max-width: 380px; margin: -12px 0 0; opacity: 0.85; overflow-wrap: anywhere; }
 
 .noscript { position: fixed; inset: 0; z-index: 40; background: var(--bg); padding: 40px 24px; text-align: center; overflow: auto; }
 .noscript h1 { margin-bottom: 12px; }
